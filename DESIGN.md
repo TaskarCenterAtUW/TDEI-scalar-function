@@ -149,13 +149,3 @@ Only two fields are required; other properties are ignored and may vary by servi
 - Click **+ Select members**, choose your **Azure Function App**.
 - Click **Review + assign**.
 
-
-
-### TODO
-- Git workflow changes 
-- [done] Test cases to verify
-   - [done] unit test case
-   - [done] integration test
-- Work on alert system. 
-   - delivery count keep provisioning 
-   - any function crash [Alert]
