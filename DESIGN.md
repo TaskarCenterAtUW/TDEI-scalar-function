@@ -83,7 +83,7 @@ Only two fields are required; other properties are ignored and may vary by servi
 
 ## Race conditions / parallelism
 - Topic messages are filtered and messages are available in right subscription, when we provision we set the container
-  instance to pick messages from same subscription. This takes care of race condition. 
+  instance to pick messages from same subscription. Ensuring container service picks right message for which it is provisioned. 
 
 ## Crash / failure scenarios
 - **Function crash after provisioning**: the container still exists and is tracked via tags.
