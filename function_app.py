@@ -288,16 +288,16 @@ def _provision_from_subscription(
             return 0
         for msg in messages:
             try:
-                if max_delivery_count is not None:
-                    delivery_count = getattr(msg, "delivery_count", None)
-                    if delivery_count is not None and delivery_count >= max_delivery_count:
-                        logging.warning(
-                            "Skipping message %s: delivery_count=%s reached max=%s",
-                            msg.message_id,
-                            delivery_count,
-                            max_delivery_count,
-                        )
-                        continue
+                # if max_delivery_count is not None:
+                #     delivery_count = getattr(msg, "delivery_count", None)
+                #     if delivery_count is not None and delivery_count >= max_delivery_count:
+                #         logging.warning(
+                #             "Skipping message %s: delivery_count=%s reached max=%s",
+                #             msg.message_id,
+                #             delivery_count,
+                #             max_delivery_count,
+                #         )
+                #         continue
                 payload = _parse_message(msg)
                 if payload["message_id"] in existing_ids:
                     logging.info(
