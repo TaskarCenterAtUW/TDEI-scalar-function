@@ -1,0 +1,9 @@
+azure-functions
+azure-servicebus
+azure-core
+azure-mgmt-resource
+azure-mgmt-containerinstance
+azure-identity
+azure-mgmt-servicebus
+python-dotenv==1.0.1
+pytest
