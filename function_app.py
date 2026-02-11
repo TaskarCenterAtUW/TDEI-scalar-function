@@ -79,6 +79,12 @@ def _get_env(name: str) -> Optional[str]:
     return os.environ.get(name)
 
 
+def _parse_csv(value: Optional[str]) -> List[str]:
+    if not value:
+        return []
+    return [part.strip() for part in value.split(",") if part.strip()]
+
+
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
@@ -236,6 +242,12 @@ def _list_relevant_container_groups(config: Config):
 
 def _get_container_state(cg: ContainerGroup) -> str:
     try:
+        for container in getattr(cg, "containers", []) or []:
+            instance_view = getattr(container, "instance_view", None)
+            current_state = getattr(instance_view, "current_state", None)
+            state = getattr(current_state, "state", None)
+            if state:
+                return state
         if cg.instance_view and getattr(cg.instance_view, "state", None):
             return cg.instance_view.state
     except Exception:
@@ -246,11 +258,18 @@ def _get_container_state(cg: ContainerGroup) -> str:
 def _split_container_groups(
     groups: Iterable[ContainerGroup],
 ) -> Tuple[List[ContainerGroup], List[ContainerGroup]]:
-    terminal_states = {"Succeeded", "Terminated", "Failed"}
+    terminal_states = {"Terminated", "Failed", "Succeeded"}
     active = []
     terminal = []
     for group in groups:
         state = _get_container_state(group)
+        provisioning_state = getattr(group, "provisioning_state", "Unknown")
+        logging.info(
+            "Container group %s state=%s provisioning_state=%s",
+            getattr(group, "name", "unknown"),
+            state,
+            provisioning_state,
+        )
         if state in terminal_states:
             terminal.append(group)
         else:
@@ -344,9 +363,32 @@ def _parse_message(msg) -> dict:
     if not message_id:
         raise ValueError("message_id is required")
 
-    file_size_raw = message_data.get("file_size_mb")
-    if file_size_raw is None:
-        file_size_raw = data.get("file_size_mb")
+    application_properties = getattr(msg, "application_properties", None) or {}
+    if not application_properties:
+        raw_message = getattr(msg, "_raw_amqp_message", None)
+        raw_props = getattr(raw_message, "application_properties", None)
+        if raw_props:
+            application_properties = raw_props
+
+    if isinstance(application_properties, dict):
+        normalized = {}
+        for key, value in application_properties.items():
+            if isinstance(key, bytes):
+                try:
+                    key = key.decode("utf-8")
+                except Exception:
+                    key = str(key)
+            normalized[str(key)] = value
+        application_properties = normalized
+
+    if "file_size_mb" not in application_properties:
+        raise ValueError("file_size_mb is required in application properties")
+
+    file_size_raw = application_properties.get("file_size_mb")
+    logging.info(
+        "Message file size from application properties: %s",
+        file_size_raw,
+    )
     try:
         file_size_mb = float(file_size_raw)
     except (TypeError, ValueError) as exc:
@@ -449,15 +491,27 @@ def _create_container_instance(
     poller = _get_aci_client().container_groups.begin_create_or_update(
         config.azure.resource_group, group_name, group
     )
-    # poller.result()
     while not poller.done():
         logging.info(f"Provisioning ACI {group_name}... Status: {poller.status()}")
-        time.sleep(10)  # Check every 10 seconds
+        time.sleep(1)  # Check every 1 seconds
 
-    if poller.status() == "Succeeded":
+    try:
+        result = poller.result()
+    except Exception as exc:
+        logging.error(
+            "Provisioning failed with status %s: %s", poller.status(), exc
+        )
+        return group_name
+
+    provisioning_state = _get_container_state(result)
+    if provisioning_state in {"Succeeded", "Running"}:
         logging.info(f"Successfully provisioned {group_name}")
     else:
-        logging.error(f"Provisioning failed with status: {poller.status()}")
+        logging.error(
+            "Provisioning failed with status %s (state=%s)",
+            poller.status(),
+            provisioning_state,
+        )
 
     return group_name
 
@@ -531,6 +585,18 @@ def _scale_subscription():
                     _list_topic_subscriptions(config),
                     key=lambda sub: sub.name,
                 )
+                skip_subscriptions = set(_parse_csv(_get_env("SKIP_SUBSCRIPTIONS")))
+                if skip_subscriptions:
+                    subscriptions = [
+                        sub
+                        for sub in subscriptions
+                        if getattr(sub, "name", None) not in skip_subscriptions
+                    ]
+                    logging.info(
+                        "[%s] Skipping subscriptions: %s",
+                        config.service_bus.topic_name,
+                        ", ".join(sorted(skip_subscriptions)),
+                    )
                 if not subscriptions:
                     logging.info(
                         "[%s] No subscriptions found to process",

@@ -5,7 +5,6 @@
   "message": null,
   "data": {
     "user_id": "50a49bf7-fa92-46f8-a53f-f4b732945013",
-    "file_upload_path": "https://tdeisamplestorage.blob.core.windows.net/osw/jobs/validation/2025/3/2092d230-7487-4090-9862-a6186de86e5d/osw_qm.zip",
-    "file_size_mb": 50
+    "file_upload_path": "https://tdeisamplestorage.blob.core.windows.net/osw/jobs/validation/2025/3/2092d230-7487-4090-9862-a6186de86e5d/osw_qm.zip"
   }
 }

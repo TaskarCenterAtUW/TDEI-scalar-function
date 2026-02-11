@@ -1,7 +1,9 @@
 # ACI Scale Management - Design Summary
 
 ## Purpose
-Timer-triggered Azure Function that peeks Service Bus topic subscriptions and provisions Azure Container Instances (ACI) to process validation requests. Each container is sized by input file size.
+Timer-triggered Azure Function that peeks Service Bus topic subscriptions and
+provisions Azure Container Instances (ACI) to process validation requests. Each
+container is sized by input file size from Service Bus application properties.
 
 ## Inputs
 ### Environment variables
@@ -32,21 +34,20 @@ Service Bus
 - `SB_CONNECTION_STR`
 - `SB_NAMESPACE` (optional if it can be derived from connection string)
 - `SB_TOPIC_NAME`
+- `SKIP_SUBSCRIPTIONS` (optional comma-separated list of subscription names to skip)
 
 ### Service Bus message (required fields for scaler)
 Only two fields are required; other properties are ignored and may vary by service.
 
 - `messageId` from Service Bus metadata
-- `file_size_mb` from message body (top-level or `data.file_size_mb`)
+- `file_size_mb` from Service Bus application properties
 ```json
 {
         "messageId": "5e1a464d-9d69-4e74-871b-474bdc31da20",
         "messageType": "osw_validation_only|osw_validation_only",
         "publishedDate": "2025-03-20T13:18:42.501Z",
         "message": "",
-        "data": {
-            "file_size_mb": 50
-        }
+        "data": {}
     }
 ```
 
@@ -54,6 +55,7 @@ Only two fields are required; other properties are ignored and may vary by servi
 - The function peeks messages from each subscription on the configured topic.
 - Peek does not settle messages; it is read-only and used only to decide provisioning.
 - Scalar loops thorugh topic subscriptions are processed in sorted name order to keep deterministic behavior.
+- Subscriptions listed in `SKIP_SUBSCRIPTIONS` are filtered out before processing.
 - Pass 1 provisions at most one message per subscription.
 - Pass 2 fills remaining capacity with more messages, still in order.
 - Scalar triggers every minute and same process repeats.
@@ -63,7 +65,6 @@ Only two fields are required; other properties are ignored and may vary by servi
 2. Split list into active vs terminal states.
 3. Compute remaining capacity: `ACI_MAX_INSTANCES - active_count`.
 4. Skip if `message_id` already exists in active or terminal container tags.
-5. Skip if `delivery_count` is at or above subscription `max_delivery_count`.
 6. Calculate memory: `(file_size_mb / 1024) * ACI_MEMORY_MULTIPLIER`, clamped by min/max.
 7. Create an ACI container group with tags for reference:
    - `managed_by`
@@ -74,7 +75,7 @@ Only two fields are required; other properties are ignored and may vary by servi
 ## Validations
 - Rejects messages if JSON cannot be parsed.
 - Rejects messages if `message_id` is missing.
-- Rejects messages if `file_size_mb` is missing or not numeric.
+- Rejects messages if `file_size_mb` is missing or not numeric in application properties.
 
 ## Duplicate handling
 - Uses existing active + terminal containers' `message_id` tags to avoid provisioning duplicates.
@@ -94,6 +95,7 @@ Only two fields are required; other properties are ignored and may vary by servi
 ## Notes
 - The scaler does not process or settle Service Bus messages.
 - The scaler does not validate or use any fields other than `message_id` and `file_size_mb`.
+- `file_size_mb` is read only from Service Bus application properties.
 - Container service is expected to exit after processing and settling the message.
 - `INSTANCE_SUBSCRIPTION_ENV_NAME` sets the env key for subscription name.
  
