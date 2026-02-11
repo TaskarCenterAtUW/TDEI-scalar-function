@@ -28,6 +28,7 @@ See `.env` for a full, working example. Key groups:
   - `SB_TOPIC_NAME` (required)
 - Optional processing control:
   - `SKIP_SUBSCRIPTIONS` (comma-separated subscription names to skip)
+  - `PROVISIONING_MAX_WORKERS` (max parallel workers for provisioning, default 4)
 - Container env pass-through:
   - Set any `INSTANCE_*` variables and they will be passed to the container
     without the `INSTANCE_` prefix.
@@ -55,6 +56,7 @@ Example:
 - Skips provisioning if a `message_id` already exists in active or terminal
   container tags.
 - Peeks messages (does not settle them).
+- Provisions in parallel across subscriptions (bounded by `PROVISIONING_MAX_WORKERS`).
 - Filters out subscriptions listed in `SKIP_SUBSCRIPTIONS`.
 - Creates an ACI group per message with tags:
   `managed_by`, `message_id`, `file_size_mb`.

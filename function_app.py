@@ -3,6 +3,10 @@ import logging
 import uuid
 import json
 import time
+import contextlib
+import math
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -83,6 +87,34 @@ def _parse_csv(value: Optional[str]) -> List[str]:
     if not value:
         return []
     return [part.strip() for part in value.split(",") if part.strip()]
+
+
+def _get_int_env(name: str, default: int) -> int:
+    value = _get_env(name)
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logging.warning("Invalid int for %s=%s, using %s", name, value, default)
+        return default
+
+
+class _ProvisioningLimiter:
+    def __init__(self, max_slots: int):
+        self._remaining = max_slots
+        self._lock = threading.Lock()
+
+    def try_acquire(self) -> bool:
+        with self._lock:
+            if self._remaining <= 0:
+                return False
+            self._remaining -= 1
+            return True
+
+    def release(self) -> None:
+        with self._lock:
+            self._remaining += 1
 
 
 def _require_env(name: str) -> str:
@@ -219,7 +251,11 @@ def _calculate_memory_from_file_size_mb(config: Config, file_size_mb: float) -> 
     """
     file_size_gb = file_size_mb / 1024
     memory_gb = config.azure.memory_multiplier * file_size_gb
-    return max(config.azure.min_memory_gb, min(memory_gb, config.azure.max_memory_gb))
+    memory_gb = max(
+        config.azure.min_memory_gb, min(memory_gb, config.azure.max_memory_gb)
+    )
+    # ACI requires memory in 0.1 GB increments.
+    return math.ceil(memory_gb * 10) / 10
 
 
 def _list_relevant_container_groups(config: Config):
@@ -285,23 +321,35 @@ def _existing_message_ids(groups: Iterable[ContainerGroup]) -> set:
 
 def _provision_from_subscription(
     config: Config,
-    sb_client: ServiceBusClient,
+    sb_client: Optional[ServiceBusClient],
     subscription_name: str,
     max_messages: int,
     existing_ids: set,
     max_delivery_count: Optional[int] = None,
+    existing_ids_lock: Optional[threading.Lock] = None,
+    limiter: Optional[_ProvisioningLimiter] = None,
 ) -> int:
     if max_messages <= 0:
         return 0
     if not subscription_name:
         logging.warning("Skipping subscription with missing name")
         return 0
-    receiver = sb_client.get_subscription_receiver(
-        topic_name=config.service_bus.topic_name,
-        subscription_name=subscription_name,
-    )
+
     provisioned = 0
-    with receiver:
+    owns_client = sb_client is None
+    if owns_client:
+        sb_client = ServiceBusClient.from_connection_string(
+            config.service_bus.connection_str
+        )
+    lock = existing_ids_lock or threading.Lock()
+    with contextlib.ExitStack() as stack:
+        if owns_client:
+            stack.enter_context(sb_client)
+        receiver = sb_client.get_subscription_receiver(
+            topic_name=config.service_bus.topic_name,
+            subscription_name=subscription_name,
+        )
+        stack.enter_context(receiver)
         messages = receiver.peek_messages(max_message_count=max_messages)
         if not messages:
             return 0
@@ -318,23 +366,41 @@ def _provision_from_subscription(
                 #         )
                 #         continue
                 payload = _parse_message(msg)
-                if payload["message_id"] in existing_ids:
-                    logging.info(
-                        "Message %s already provisioned, skipping",
-                        payload["message_id"],
-                    )
-                    continue
-                _create_container_instance(config, payload, subscription_name)
-                existing_ids.add(payload["message_id"])
+                if limiter and not limiter.try_acquire():
+                    break
+                with lock:
+                    if payload["message_id"] in existing_ids:
+                        if limiter:
+                            limiter.release()
+                        logging.info(
+                            "Message %s already provisioned, skipping",
+                            payload["message_id"],
+                        )
+                        continue
+                    existing_ids.add(payload["message_id"])
+                try:
+                    _create_container_instance(config, payload, subscription_name)
+                except Exception:
+                    with lock:
+                        existing_ids.discard(payload["message_id"])
+                    if limiter:
+                        limiter.release()
+                    raise
                 provisioned += 1
                 if provisioned >= max_messages:
                     break
             except ValueError as exc:
                 logging.warning("Invalid message payload, skipping: %s", exc)
+                if limiter:
+                    limiter.release()
             except AzureError as exc:
                 logging.exception("ACI provisioning error while provisioning: %s", exc)
+                if limiter:
+                    limiter.release()
             except Exception as exc:
                 logging.exception("Unexpected error while provisioning: %s", exc)
+                if limiter:
+                    limiter.release()
     return provisioned
 
 
@@ -491,8 +557,13 @@ def _create_container_instance(
     poller = _get_aci_client().container_groups.begin_create_or_update(
         config.azure.resource_group, group_name, group
     )
+
+    previous_status = None
     while not poller.done():
-        logging.info(f"Provisioning ACI {group_name}... Status: {poller.status()}")
+        current_status = poller.status()
+        if previous_status != current_status:
+            logging.info(f"Provisioning ACI {group_name}... Status: {current_status}")
+            previous_status = current_status
         time.sleep(1)  # Check every 1 seconds
 
     try:
@@ -565,86 +636,96 @@ def _scale_subscription():
 
         # 2) Peek messages by subscription and spin containers
         try:
-            sb_client = ServiceBusClient.from_connection_string(
-                config.service_bus.connection_str
+            available_slots = config.azure.max_instances_per_sub - len(active_groups)
+            if available_slots <= 0:
+                logging.info(
+                    "[%s] No capacity available (max=%s, active=%s)",
+                    config.service_bus.topic_name,
+                    config.azure.max_instances_per_sub,
+                    len(active_groups),
+                )
+                return f"{config.service_bus.topic_name}: at capacity"
+
+            subscriptions = sorted(
+                _list_topic_subscriptions(config),
+                key=lambda sub: sub.name,
             )
-            with sb_client:
-                available_slots = config.azure.max_instances_per_sub - len(
-                    active_groups
+            skip_subscriptions = set(_parse_csv(_get_env("SKIP_SUBSCRIPTIONS")))
+            if skip_subscriptions:
+                subscriptions = [
+                    sub
+                    for sub in subscriptions
+                    if getattr(sub, "name", None) not in skip_subscriptions
+                ]
+                logging.info(
+                    "[%s] Skipping subscriptions: %s",
+                    config.service_bus.topic_name,
+                    ", ".join(sorted(skip_subscriptions)),
                 )
-                if available_slots <= 0:
-                    logging.info(
-                        "[%s] No capacity available (max=%s, active=%s)",
-                        config.service_bus.topic_name,
-                        config.azure.max_instances_per_sub,
-                        len(active_groups),
-                    )
-                    return f"{config.service_bus.topic_name}: at capacity"
-
-                subscriptions = sorted(
-                    _list_topic_subscriptions(config),
-                    key=lambda sub: sub.name,
+            subscriptions = [sub for sub in subscriptions if getattr(sub, "name", None)]
+            if not subscriptions:
+                logging.info(
+                    "[%s] No subscriptions found to process",
+                    config.service_bus.topic_name,
                 )
-                skip_subscriptions = set(_parse_csv(_get_env("SKIP_SUBSCRIPTIONS")))
-                if skip_subscriptions:
-                    subscriptions = [
-                        sub
-                        for sub in subscriptions
-                        if getattr(sub, "name", None) not in skip_subscriptions
-                    ]
-                    logging.info(
-                        "[%s] Skipping subscriptions: %s",
-                        config.service_bus.topic_name,
-                        ", ".join(sorted(skip_subscriptions)),
-                    )
-                if not subscriptions:
-                    logging.info(
-                        "[%s] No subscriptions found to process",
-                        config.service_bus.topic_name,
-                    )
-                    return f"{config.service_bus.topic_name}: no subscriptions"
+                return f"{config.service_bus.topic_name}: no subscriptions"
 
-                remaining_slots = available_slots
-                # Deterministic pass 1: one message per subscription (sorted by name).
-                for subscription in subscriptions:
-                    if remaining_slots <= 0:
-                        break
-                    if not getattr(subscription, "name", None):
-                        logging.warning(
-                            "Skipping subscription with missing name: %s",
-                            getattr(subscription, "__dict__", subscription),
-                        )
-                        continue
-                    provisioned = _provision_from_subscription(
+            max_workers = _get_int_env("PROVISIONING_MAX_WORKERS", 4)
+            max_workers = max(1, min(max_workers, len(subscriptions)))
+            logging.info(
+                "[%s] Provisioning in parallel with %s workers",
+                config.service_bus.topic_name,
+                max_workers,
+            )
+
+            remaining_slots = available_slots
+            existing_ids_lock = threading.Lock()
+
+            # Pass 1: one message per subscription (sorted by name), parallelized.
+            pass1_subscriptions = subscriptions[:remaining_slots]
+            pass1_limiter = _ProvisioningLimiter(len(pass1_subscriptions))
+            provisioned_pass1 = 0
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [
+                    executor.submit(
+                        _provision_from_subscription,
                         config,
-                        sb_client,
+                        None,
                         subscription.name,
                         1,
                         existing_ids,
                         getattr(subscription, "max_delivery_count", None),
+                        existing_ids_lock,
+                        pass1_limiter,
                     )
-                    remaining_slots -= provisioned
+                    for subscription in pass1_subscriptions
+                ]
+                for future in as_completed(futures):
+                    provisioned_pass1 += future.result()
 
-                # Deterministic pass 2: fill remaining slots in the same order.
-                if remaining_slots > 0:
-                    for subscription in subscriptions:
-                        if remaining_slots <= 0:
-                            break
-                        if not getattr(subscription, "name", None):
-                            logging.warning(
-                                "Skipping subscription with missing name: %s",
-                                getattr(subscription, "__dict__", subscription),
-                            )
-                            continue
-                        provisioned = _provision_from_subscription(
+            remaining_slots -= provisioned_pass1
+
+            # Pass 2: fill remaining slots in parallel.
+            if remaining_slots > 0:
+                pass2_limiter = _ProvisioningLimiter(remaining_slots)
+                provisioned_pass2 = 0
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [
+                        executor.submit(
+                            _provision_from_subscription,
                             config,
-                            sb_client,
+                            None,
                             subscription.name,
                             remaining_slots,
                             existing_ids,
                             getattr(subscription, "max_delivery_count", None),
+                            existing_ids_lock,
+                            pass2_limiter,
                         )
-                        remaining_slots -= provisioned
+                        for subscription in subscriptions
+                    ]
+                    for future in as_completed(futures):
+                        provisioned_pass2 += future.result()
 
         except ServiceBusError as exc:
             logging.exception(

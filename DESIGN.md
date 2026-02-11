@@ -35,6 +35,7 @@ Service Bus
 - `SB_NAMESPACE` (optional if it can be derived from connection string)
 - `SB_TOPIC_NAME`
 - `SKIP_SUBSCRIPTIONS` (optional comma-separated list of subscription names to skip)
+- `PROVISIONING_MAX_WORKERS` (optional max parallel workers, default 4)
 
 ### Service Bus message (required fields for scaler)
 Only two fields are required; other properties are ignored and may vary by service.
@@ -55,6 +56,7 @@ Only two fields are required; other properties are ignored and may vary by servi
 - The function peeks messages from each subscription on the configured topic.
 - Peek does not settle messages; it is read-only and used only to decide provisioning.
 - Scalar loops thorugh topic subscriptions are processed in sorted name order to keep deterministic behavior.
+- Provisioning uses a thread pool (bounded by `PROVISIONING_MAX_WORKERS`) to run subscriptions in parallel.
 - Subscriptions listed in `SKIP_SUBSCRIPTIONS` are filtered out before processing.
 - Pass 1 provisions at most one message per subscription.
 - Pass 2 fills remaining capacity with more messages, still in order.

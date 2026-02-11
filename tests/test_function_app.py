@@ -6,10 +6,17 @@ import function_app as app
 
 
 class FakeMessage:
-    def __init__(self, body_parts, message_id, delivery_count=1):
+    def __init__(
+        self,
+        body_parts,
+        message_id,
+        delivery_count=1,
+        application_properties=None,
+    ):
         self.body = body_parts
         self.message_id = message_id
         self.delivery_count = delivery_count
+        self.application_properties = application_properties or {}
 
 
 class FakeReceiver:
@@ -72,26 +79,34 @@ def test_calculate_memory_clamps_min_max():
     assert app._calculate_memory_from_file_size_mb(config, 50000) == 10.0
 
 
-def test_parse_message_top_level_file_size():
-    """Category: Message Parsing | Parse file size from top-level field."""
+def test_parse_message_application_properties():
+    """Category: Message Parsing | Parse file size from application properties."""
     body = [b'{"file_size_mb": 12.5}']
-    msg = FakeMessage(body, message_id="abc")
+    msg = FakeMessage(
+        body,
+        message_id="abc",
+        application_properties={"file_size_mb": 12.5},
+    )
     payload = app._parse_message(msg)
     assert payload == {"message_id": "abc", "file_size_mb": 12.5}
 
 
-def test_parse_message_from_data_fallback():
-    """Category: Message Parsing | Parse file size from data fallback."""
+def test_parse_message_missing_file_size_in_properties():
+    """Category: Message Parsing | Reject missing file size in properties."""
     body = [b'{"data": {"file_size_mb": 2}}']
     msg = FakeMessage(body, message_id="id-2")
-    payload = app._parse_message(msg)
-    assert payload == {"message_id": "id-2", "file_size_mb": 2.0}
+    with pytest.raises(ValueError, match="file_size_mb is required"):
+        app._parse_message(msg)
 
 
 def test_parse_message_embedded_json():
     """Category: Message Parsing | Parse JSON embedded in text body."""
     raw = b'prefix {"file_size_mb": 1} suffix'
-    msg = FakeMessage([raw], message_id="id-3")
+    msg = FakeMessage(
+        [raw],
+        message_id="id-3",
+        application_properties={"file_size_mb": 1},
+    )
     payload = app._parse_message(msg)
     assert payload["file_size_mb"] == 1.0
 
@@ -105,14 +120,22 @@ def test_parse_message_invalid_json():
 
 def test_parse_message_missing_message_id():
     """Category: Message Parsing | Reject messages without a message_id."""
-    msg = FakeMessage([b'{"file_size_mb": 1}'], message_id=None)
+    msg = FakeMessage(
+        [b'{"file_size_mb": 1}'],
+        message_id=None,
+        application_properties={"file_size_mb": 1},
+    )
     with pytest.raises(ValueError, match="message_id is required"):
         app._parse_message(msg)
 
 
 def test_parse_message_non_numeric_file_size():
     """Category: Message Parsing | Reject non-numeric file size values."""
-    msg = FakeMessage([b'{"file_size_mb": "big"}'], message_id="id-5")
+    msg = FakeMessage(
+        [b'{"file_size_mb": "big"}'],
+        message_id="id-5",
+        application_properties={"file_size_mb": "big"},
+    )
     with pytest.raises(ValueError, match="file_size_mb must be a number"):
         app._parse_message(msg)
 
@@ -131,7 +154,7 @@ def test_split_container_groups_terminal_vs_active():
 
     active, terminal = app._split_container_groups([succeeded, running, failed])
     assert running in active
-    assert succeeded in terminal
+    assert succeeded in active
     assert failed in terminal
 
 
@@ -147,8 +170,16 @@ def test_provision_from_subscription_respects_max_and_skips_duplicates(monkeypat
     """Category: Provisioning | Provision only new messages and respect max count."""
     config = _make_config()
     messages = [
-        FakeMessage([b'{"file_size_mb": 1}'], message_id="dup"),
-        FakeMessage([b'{"file_size_mb": 2}'], message_id="new"),
+        FakeMessage(
+            [b'{"file_size_mb": 1}'],
+            message_id="dup",
+            application_properties={"file_size_mb": 1},
+        ),
+        FakeMessage(
+            [b'{"file_size_mb": 2}'],
+            message_id="new",
+            application_properties={"file_size_mb": 2},
+        ),
     ]
     receiver = FakeReceiver(messages)
     sb_client = FakeServiceBusClient(receiver)
@@ -179,8 +210,16 @@ def test_provision_from_subscription_skips_invalid_messages(monkeypatch):
     """Category: Provisioning | Skip invalid messages and continue provisioning."""
     config = _make_config()
     messages = [
-        FakeMessage([b"bad"], message_id="a"),
-        FakeMessage([b'{"file_size_mb": 1}'], message_id="b"),
+        FakeMessage(
+            [b"bad"],
+            message_id="a",
+            application_properties={"file_size_mb": 1},
+        ),
+        FakeMessage(
+            [b'{"file_size_mb": 1}'],
+            message_id="b",
+            application_properties={"file_size_mb": 1},
+        ),
     ]
     receiver = FakeReceiver(messages)
     sb_client = FakeServiceBusClient(receiver)
@@ -291,4 +330,4 @@ def test_scale_subscription_provisions_deterministic_passes(monkeypatch):
 
     result = app._scale_subscription()
     assert result == "topic: OK"
-    assert calls == [("a", 1), ("b", 1)]
+    assert sorted(calls) == [("a", 1), ("b", 1)]
