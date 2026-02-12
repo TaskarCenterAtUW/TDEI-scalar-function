@@ -76,3 +76,7 @@ Run:
 - `pytest -m "not integration" -vv`
 
 - `pytest -m integration tests/test_integration_e2e.py --e2e-file-sizes 50,180,500,1024 --e2e-expected-subscriptions 1-50MB,51-200MB,201-600MB,601-1GB --e2e-timeout-seconds 900`
+
+## TODO
+- GitWorkflow strategy for provisioning for different services
+  - Right now manual deployment can be achived
