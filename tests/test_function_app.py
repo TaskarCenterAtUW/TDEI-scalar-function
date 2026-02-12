@@ -12,11 +12,16 @@ class FakeMessage:
         message_id,
         delivery_count=1,
         application_properties=None,
+        raw_application_properties=None,
     ):
         self.body = body_parts
         self.message_id = message_id
         self.delivery_count = delivery_count
         self.application_properties = application_properties or {}
+        if raw_application_properties is not None:
+            self._raw_amqp_message = types.SimpleNamespace(
+                application_properties=raw_application_properties
+            )
 
 
 class FakeReceiver:
@@ -91,6 +96,31 @@ def test_parse_message_application_properties():
     assert payload == {"message_id": "abc", "file_size_mb": 12.5}
 
 
+def test_parse_message_bytes_application_properties():
+    """Category: Message Parsing | Decode byte keys in application properties."""
+    body = [b'{"file_size_mb": 5}']
+    msg = FakeMessage(
+        body,
+        message_id="bytes-key",
+        application_properties={b"file_size_mb": 5},
+    )
+    payload = app._parse_message(msg)
+    assert payload == {"message_id": "bytes-key", "file_size_mb": 5.0}
+
+
+def test_parse_message_raw_amqp_application_properties():
+    """Category: Message Parsing | Fallback to raw AMQP properties."""
+    body = [b'{"file_size_mb": 7}']
+    msg = FakeMessage(
+        body,
+        message_id="raw-props",
+        application_properties={},
+        raw_application_properties={b"file_size_mb": 7},
+    )
+    payload = app._parse_message(msg)
+    assert payload == {"message_id": "raw-props", "file_size_mb": 7.0}
+
+
 def test_parse_message_missing_file_size_in_properties():
     """Category: Message Parsing | Reject missing file size in properties."""
     body = [b'{"data": {"file_size_mb": 2}}']
@@ -154,7 +184,7 @@ def test_split_container_groups_terminal_vs_active():
 
     active, terminal = app._split_container_groups([succeeded, running, failed])
     assert running in active
-    assert succeeded in active
+    assert succeeded in terminal
     assert failed in terminal
 
 
@@ -249,7 +279,8 @@ def test_scale_subscription_at_capacity(monkeypatch):
     """Category: Scaling | Return at capacity when no slots are available."""
     config = _make_config(max_instances=0)
     monkeypatch.setattr(app, "_get_config", lambda: config)
-    monkeypatch.setattr(app, "_list_relevant_container_groups", lambda _cfg: ["cg1"])
+    group = types.SimpleNamespace(tags={})
+    monkeypatch.setattr(app, "_list_relevant_container_groups", lambda _cfg: [group])
     monkeypatch.setattr(
         app, "_split_container_groups", lambda groups: (groups, [])
     )
@@ -290,6 +321,8 @@ def test_scale_subscription_provisions_deterministic_passes(monkeypatch):
     monkeypatch.setattr(app, "_get_config", lambda: config)
     monkeypatch.setattr(app, "_list_relevant_container_groups", lambda _cfg: [])
     monkeypatch.setattr(app, "_split_container_groups", lambda groups: ([], []))
+    monkeypatch.delenv("SKIP_SUBSCRIPTIONS", raising=False)
+    monkeypatch.setenv("PROVISIONING_MAX_WORKERS", "1")
     monkeypatch.setattr(
         app,
         "_list_topic_subscriptions",
@@ -322,6 +355,8 @@ def test_scale_subscription_provisions_deterministic_passes(monkeypatch):
         max_messages,
         existing_ids,
         max_delivery_count,
+        existing_ids_lock=None,
+        limiter=None,
     ):
         calls.append((subscription_name, max_messages))
         return 1
