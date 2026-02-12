@@ -61,6 +61,7 @@ Example:
 - Creates an ACI group per message with tags:
   `managed_by`, `message_id`, `file_size_mb`.
 - Deletes terminal containers after provisioning (state `Terminated` or `Failed`).
+- Captures the last 20 log lines from each container before deletion.
 
 ## Integration test
 The integration test sends one or more messages to the topic (file sizes are

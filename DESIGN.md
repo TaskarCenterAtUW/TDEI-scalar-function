@@ -67,12 +67,13 @@ Only two fields are required; other properties are ignored and may vary by servi
 2. Split list into active vs terminal states.
 3. Compute remaining capacity: `ACI_MAX_INSTANCES - active_count`.
 4. Skip if `message_id` already exists in active or terminal container tags.
-6. Calculate memory: `(file_size_mb / 1024) * ACI_MEMORY_MULTIPLIER`, clamped by min/max.
+6. Calculate memory: `(file_size_mb / 1024) * ACI_MEMORY_MULTIPLIER`, clamped by min/max,
+   then rounded up to the nearest 0.1 GB (ACI requirement).
 7. Create an ACI container group with tags for reference:
    - `managed_by`
    - `message_id`
    - `file_size_mb`
-8. Delete terminal containers after provisioning.
+8. Capture last 20 lines of container logs, then delete terminal containers after provisioning.
 
 ## Validations
 - Rejects messages if JSON cannot be parsed.

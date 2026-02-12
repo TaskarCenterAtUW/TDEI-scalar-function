@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from azure.identity import DefaultAzureCredential
 from azure.servicebus import ServiceBusClient
 from azure.servicebus.exceptions import ServiceBusError
-from azure.core.exceptions import AzureError
+from azure.core.exceptions import AzureError, ResourceNotFoundError
 from azure.mgmt.containerinstance import ContainerInstanceManagementClient
 from azure.mgmt.servicebus import ServiceBusManagementClient
 from azure.mgmt.containerinstance.models import (
@@ -588,6 +588,7 @@ def _create_container_instance(
 
 
 def _delete_container_group(config: Config, name: str):
+    _log_container_tail(config, name, tail=20, retries=3, delay_seconds=1.5)
     logging.info(f"Deleting container group {name}")
     poller = _get_aci_client().container_groups.begin_delete(
         config.azure.resource_group, name
@@ -596,6 +597,67 @@ def _delete_container_group(config: Config, name: str):
         poller.wait() if hasattr(poller, "wait") else poller.result()
     except Exception as e:
         logging.exception(f"Error deleting container group {name}: {e}")
+
+
+def _log_container_tail(
+    config: Config,
+    group_name: str,
+    tail: int = 20,
+    retries: int = 0,
+    delay_seconds: float = 1.0,
+) -> None:
+    for attempt in range(retries + 1):
+        try:
+            group = _get_aci_client().container_groups.get(
+                config.azure.resource_group, group_name
+            )
+            containers = getattr(group, "containers", []) or []
+            if not containers:
+                logging.info(
+                    "No containers found in group %s; skipping log fetch",
+                    group_name,
+                )
+                return
+            for container in containers:
+                container_name = getattr(container, "name", None) or group_name
+                logs = _get_aci_client().containers.list_logs(
+                    config.azure.resource_group,
+                    group_name,
+                    container_name,
+                    tail=tail,
+                )
+                content = getattr(logs, "content", None)
+                if content:
+                    logging.info(
+                        "Container logs (tail=%s) for %s/%s:\n%s",
+                        tail,
+                        group_name,
+                        container_name,
+                        content,
+                    )
+                else:
+                    logging.info(
+                        "No container logs available (tail=%s) for %s/%s",
+                        tail,
+                        group_name,
+                        container_name,
+                    )
+            return
+        except ResourceNotFoundError:
+            logging.info(
+                "Container group %s not found; skipping log fetch",
+                group_name,
+            )
+            return
+        except Exception as exc:
+            if attempt >= retries:
+                logging.warning(
+                    "Unable to fetch container logs for %s: %s",
+                    group_name,
+                    exc,
+                )
+                return
+            time.sleep(delay_seconds)
 
 
 def _scale_subscription():
@@ -770,7 +832,8 @@ def _scale_subscription():
 
 @app.timer_trigger(schedule="0 */1 * * * *", arg_name="mytimer")
 def main(mytimer: func.TimerRequest, context: func.Context) -> None:
-    logging.info("===== SCALER TRIGGERED - STARTING EXECUTION - v2 =====")
+    version = 3
+    logging.info("===== SCALER TRIGGERED - STARTING EXECUTION - VERSION {version} =====")
     config = _get_config()
     _log_config_summary(config)
 
@@ -783,4 +846,4 @@ def main(mytimer: func.TimerRequest, context: func.Context) -> None:
         logging.exception(e)
         raise
 
-    logging.info("===== SCALER EXECUTION COMPLETED =====")
+    logging.info(f"===== SCALER EXECUTION COMPLETED VERSION {version}=====")
