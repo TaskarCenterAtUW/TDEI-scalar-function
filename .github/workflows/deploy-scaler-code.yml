@@ -1,0 +1,38 @@
+name: deploy-scaler-code
+
+on:
+  workflow_dispatch:
+    inputs:
+      function_app_name:
+        type: string
+        required: true
+      resource_group:
+        type: string
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to Azure
+        uses: azure/login@v2.0.0
+        with:
+          creds: ${{ secrets.TDEI_CORE_AZURE_CREDS }}
+
+      - name: Create deployment zip
+        shell: bash
+        run: |
+          zip -r /tmp/functionapp.zip . \
+            -x ".git/*" ".github/*" ".venv/*" "tests/*" "__pycache__/*"
+
+      - name: Deploy code to Function App
+        shell: bash
+        run: |
+          az functionapp deployment source config-zip \
+            --name "${{ inputs.function_app_name }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --src /tmp/functionapp.zip

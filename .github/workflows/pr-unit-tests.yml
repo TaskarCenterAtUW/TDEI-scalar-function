@@ -1,0 +1,60 @@
+name: pr-unit-tests
+
+on:
+  pull_request:
+    branches: [ master, dev, stage ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Determine output folder
+        shell: bash
+        run: |
+          if [[ $GITHUB_EVENT_NAME == "pull_request" ]]; then
+            branch_name=$GITHUB_BASE_REF
+          else
+            branch_name=$GITHUB_REF_NAME
+          fi
+          if [[ $branch_name == "master" ]]; then
+            echo "OUTPUT_FOLDER=prod" >> $GITHUB_ENV
+          elif [[ $branch_name == "stage" ]]; then
+            echo "OUTPUT_FOLDER=stage" >> $GITHUB_ENV
+          elif [[ $branch_name == "dev" ]]; then
+            echo "OUTPUT_FOLDER=dev" >> $GITHUB_ENV
+          else
+            echo "Unknown branch: $branch_name"
+            exit 1
+          fi
+
+      - name: Run unit tests
+        run: |
+          mkdir -p test_results
+          timestamp=$(date '+%Y-%m-%d_%H-%M-%S')
+          pytest -m "not integration" -vv
+          if [ -d test-results ]; then
+            mkdir -p "test_results/${timestamp}"
+            cp -R test-results/* "test_results/${timestamp}/"
+          fi
+
+      - name: Upload report to Azure
+        uses: LanceMcCarthy/Action-AzureBlobUpload@v2
+        with:
+          source_folder: "test_results"
+          destination_folder: "${{ env.OUTPUT_FOLDER }}"
+          connection_string: ${{ secrets.AZURE_STORAGE_CONNECTION_STRING }}
+          container_name: "scaler-unit-tests"
+          clean_destination_folder: false
+          delete_if_exists: false
