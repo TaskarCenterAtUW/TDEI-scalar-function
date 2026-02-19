@@ -336,6 +336,8 @@ def _provision_from_subscription(
         return 0
 
     provisioned = 0
+    peek_max_messages = _get_int_env("PROVISIONING_PEEK_MAX", 50)
+    peek_count = max(max_messages, peek_max_messages)
     owns_client = sb_client is None
     if owns_client:
         sb_client = ServiceBusClient.from_connection_string(
@@ -350,11 +352,18 @@ def _provision_from_subscription(
             subscription_name=subscription_name,
         )
         stack.enter_context(receiver)
-        messages = receiver.peek_messages(max_message_count=max_messages)
+        messages = receiver.peek_messages(max_message_count=peek_count)
+        logging.info(
+            "Peeked %s message(s) from subscription %s (max=%s)",
+            len(messages) if messages is not None else 0,
+            subscription_name,
+            peek_count,
+        )
         if not messages:
             return 0
         for msg in messages:
             try:
+                msg_id = getattr(msg, "message_id", None)
                 # if max_delivery_count is not None:
                 #     delivery_count = getattr(msg, "delivery_count", None)
                 #     if delivery_count is not None and delivery_count >= max_delivery_count:
@@ -366,6 +375,11 @@ def _provision_from_subscription(
                 #         )
                 #         continue
                 payload = _parse_message(msg)
+                logging.info(
+                    "Provisioning candidate message_id=%s from subscription=%s",
+                    payload.get("message_id"),
+                    subscription_name,
+                )
                 if limiter and not limiter.try_acquire():
                     break
                 with lock:
@@ -390,7 +404,11 @@ def _provision_from_subscription(
                 if provisioned >= max_messages:
                     break
             except ValueError as exc:
-                logging.warning("Invalid message payload, skipping: %s", exc)
+                logging.warning(
+                    "Invalid message payload, skipping. message_id=%s error=%s",
+                    msg_id,
+                    exc,
+                )
                 if limiter:
                     limiter.release()
             except AzureError as exc:
@@ -748,7 +766,7 @@ def _scale_subscription():
             pass1_limiter = _ProvisioningLimiter(len(pass1_subscriptions))
             provisioned_pass1 = 0
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [
+                futures = {
                     executor.submit(
                         _provision_from_subscription,
                         config,
@@ -759,11 +777,18 @@ def _scale_subscription():
                         getattr(subscription, "max_delivery_count", None),
                         existing_ids_lock,
                         pass1_limiter,
-                    )
+                    ): subscription.name
                     for subscription in pass1_subscriptions
-                ]
+                }
                 for future in as_completed(futures):
-                    provisioned_pass1 += future.result()
+                    sub_name = futures[future]
+                    count = future.result()
+                    logging.info(
+                        "Pass 1 provisioned %s message(s) from %s",
+                        count,
+                        sub_name,
+                    )
+                    provisioned_pass1 += count
 
             remaining_slots -= provisioned_pass1
 
@@ -772,7 +797,7 @@ def _scale_subscription():
                 pass2_limiter = _ProvisioningLimiter(remaining_slots)
                 provisioned_pass2 = 0
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = [
+                    futures = {
                         executor.submit(
                             _provision_from_subscription,
                             config,
@@ -783,11 +808,18 @@ def _scale_subscription():
                             getattr(subscription, "max_delivery_count", None),
                             existing_ids_lock,
                             pass2_limiter,
-                        )
+                        ): subscription.name
                         for subscription in subscriptions
-                    ]
+                    }
                     for future in as_completed(futures):
-                        provisioned_pass2 += future.result()
+                        sub_name = futures[future]
+                        count = future.result()
+                        logging.info(
+                            "Pass 2 provisioned %s message(s) from %s",
+                            count,
+                            sub_name,
+                        )
+                        provisioned_pass2 += count
 
         except ServiceBusError as exc:
             logging.exception(
