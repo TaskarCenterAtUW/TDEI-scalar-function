@@ -1,6 +1,12 @@
 {
   "version": "2.0",
   "logging": {
+    "logLevel": {
+      "default": "Information",
+      "Function": "Information",
+      "Host.Results": "Information",
+      "Worker": "Information"
+    },
     "applicationInsights": {
       "samplingSettings": {
         "isEnabled": false,

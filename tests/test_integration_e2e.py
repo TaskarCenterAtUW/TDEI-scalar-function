@@ -80,11 +80,21 @@ def _wait_for_group_by_message_id(config, message_id, deadline, poll_interval):
 def _wait_for_terminal_state(config, group_name, deadline, poll_interval):
     terminal_states = {"Succeeded", "Terminated", "Failed"}
     while time.monotonic() < deadline:
-        groups = app._list_relevant_container_groups(config)
-        group = next((g for g in groups if g.name == group_name), None)
-        if not group:
+        try:
+            group = app._get_aci_client().container_groups.get(
+                config.azure.resource_group, group_name
+            )
+        except Exception:
             return None
-        if app._get_container_state(group) in terminal_states:
+        state = app._get_container_instance_state(group)
+        provisioning_state = getattr(group, "provisioning_state", "Unknown")
+        LOGGER.info(
+            "Container group state: name=%s container_state=%s provisioning_state=%s",
+            group_name,
+            state,
+            provisioning_state,
+        )
+        if state in terminal_states:
             return group
         remaining = _remaining_time(deadline)
         if remaining <= 0:
@@ -95,6 +105,12 @@ def _wait_for_terminal_state(config, group_name, deadline, poll_interval):
 
 def _wait_for_group_deleted(config, group_name, deadline, poll_interval):
     while time.monotonic() < deadline:
+        try:
+            app._get_aci_client().container_groups.get(
+                config.azure.resource_group, group_name
+            )
+        except Exception:
+            return True
         groups = app._list_relevant_container_groups(config)
         if not any(g.name == group_name for g in groups):
             return True
@@ -306,6 +322,7 @@ def test_end_to_end_happy_flow(pytestconfig):
                 actual_memory,
             )
 
+        terminal_states_by_group = {}
         for group_name in group_names:
             terminal_group = _wait_for_terminal_state(
                 config, group_name, deadline, poll_interval
@@ -317,19 +334,30 @@ def test_end_to_end_happy_flow(pytestconfig):
             assert (
                 terminal_group is not None
             ), "Container group did not reach terminal state"
+            terminal_states_by_group[group_name] = app._get_container_state(
+                terminal_group
+            )
 
         LOGGER.info("Triggering scale logic for cleanup")
         app._scale_subscription()
 
         for group_name in group_names:
+            state = terminal_states_by_group.get(group_name)
             deleted = _wait_for_group_deleted(
                 config, group_name, deadline, poll_interval
             )
-            if not deleted:
-                LOGGER.error("Container group was not deleted after completion")
+            if state in {"Failed", "Terminated"}:
+                if not deleted:
+                    LOGGER.error("Container group was not deleted after completion")
+                else:
+                    LOGGER.info("Container group deleted: %s", group_name)
+                assert deleted, "Container group was not deleted after completion"
             else:
-                LOGGER.info("Container group deleted: %s", group_name)
-            assert deleted, "Container group was not deleted after completion"
+                LOGGER.info(
+                    "Skipping delete assertion for %s (terminal state=%s)",
+                    group_name,
+                    state,
+                )
 
     finally:
         for group_name in group_names:

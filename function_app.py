@@ -7,6 +7,7 @@ import contextlib
 import math
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import contextvars
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -115,6 +116,11 @@ class _ProvisioningLimiter:
     def release(self) -> None:
         with self._lock:
             self._remaining += 1
+
+
+def _submit_with_context(executor, func, *args, **kwargs):
+    ctx = contextvars.copy_context()
+    return executor.submit(ctx.run, func, *args, **kwargs)
 
 
 def _require_env(name: str) -> str:
@@ -276,7 +282,7 @@ def _list_relevant_container_groups(config: Config):
     return relevant
 
 
-def _get_container_state(cg: ContainerGroup) -> str:
+def _get_container_instance_state(cg: ContainerGroup) -> Optional[str]:
     try:
         for container in getattr(cg, "containers", []) or []:
             instance_view = getattr(container, "instance_view", None)
@@ -285,16 +291,25 @@ def _get_container_state(cg: ContainerGroup) -> str:
             if state:
                 return state
         if cg.instance_view and getattr(cg.instance_view, "state", None):
+            logging.info(
+                "Container instance state missing; using group instance_view.state=%s",
+                cg.instance_view.state,
+            )
             return cg.instance_view.state
     except Exception:
         pass
-    return getattr(cg, "provisioning_state", "Unknown")
+    return None
+
+
+def _get_container_state(cg: ContainerGroup) -> str:
+    state = _get_container_instance_state(cg)
+    return state or "Unknown"
 
 
 def _split_container_groups(
     groups: Iterable[ContainerGroup],
 ) -> Tuple[List[ContainerGroup], List[ContainerGroup]]:
-    terminal_states = {"Terminated", "Failed", "Succeeded"}
+    terminal_states = {"Terminated", "Failed"}
     active = []
     terminal = []
     for group in groups:
@@ -311,6 +326,24 @@ def _split_container_groups(
         else:
             active.append(group)
     return active, terminal
+
+
+def _should_delete_group(cg: ContainerGroup) -> bool:
+    container_state = _get_container_instance_state(cg)
+    provisioning_state = getattr(cg, "provisioning_state", None)
+    logging.info(
+        "Delete check for %s: container_state=%s provisioning_state=%s",
+        getattr(cg, "name", "unknown"),
+        container_state,
+        provisioning_state,
+    )
+    if not container_state or not provisioning_state:
+        return False
+    return container_state in {"Failed", "Terminated"} and provisioning_state in {
+        "Succeeded",
+        "Failed",
+        "Terminated",
+    }
 
 
 def _existing_message_ids(groups: Iterable[ContainerGroup]) -> set:
@@ -767,7 +800,8 @@ def _scale_subscription():
             provisioned_pass1 = 0
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
-                    executor.submit(
+                    _submit_with_context(
+                        executor,
                         _provision_from_subscription,
                         config,
                         None,
@@ -798,7 +832,8 @@ def _scale_subscription():
                 provisioned_pass2 = 0
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = {
-                        executor.submit(
+                        _submit_with_context(
+                            executor,
                             _provision_from_subscription,
                             config,
                             None,
@@ -834,11 +869,30 @@ def _scale_subscription():
                 exc,
             )
 
-        # 3) Delete all terminal containers to clean up (after provisioning)
-        if terminal_groups:
-            logging.info("Deleting %s terminal containers", len(terminal_groups))
-            for group in terminal_groups:
+        # 3) Delete terminal containers to clean up (after provisioning)
+        if groups:
+            logging.info("Evaluating %s container groups for deletion", len(groups))
+            for group in groups:
                 try:
+                    try:
+                        fresh_group = _get_aci_client().container_groups.get(
+                            config.azure.resource_group, group.name
+                        )
+                    except ResourceNotFoundError:
+                        continue
+                    if not _should_delete_group(fresh_group):
+                        container_state = _get_container_instance_state(fresh_group)
+                        provisioning_state = getattr(
+                            fresh_group, "provisioning_state", "Unknown"
+                        )
+                        logging.info(
+                            "Skipping delete; container %s not terminal "
+                            "(container_state=%s provisioning_state=%s)",
+                            group.name,
+                            container_state,
+                            provisioning_state,
+                        )
+                        continue
                     _delete_container_group(config, group.name)
                 except Exception as exc:
                     logging.exception(
