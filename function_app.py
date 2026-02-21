@@ -36,6 +36,26 @@ from azure.mgmt.containerinstance.models import (
 load_dotenv()
 app = func.FunctionApp()
 
+# -----------------------------------------------------------------------------
+# Logging context (propagates invocation ID across threads)
+# -----------------------------------------------------------------------------
+INVOCATION_ID = contextvars.ContextVar("invocation_id", default=None)
+
+
+class InvocationIdFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        invocation_id = INVOCATION_ID.get()
+        if invocation_id:
+            record.msg = f"[invocation_id={invocation_id}] {record.msg}"
+        return True
+
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+root_logger.addFilter(InvocationIdFilter())
+logging.getLogger("azure").setLevel(logging.INFO)
+logging.getLogger("azure.core").setLevel(logging.INFO)
+
 
 @dataclass(frozen=True)
 class AzureProvisioningConfig:
@@ -73,13 +93,18 @@ class Config:
     instance_env: Dict[str, str]
 
 
+# -----------------------------------------------------------------------------
 # SDK clients (lazily initialized to avoid startup timeout)
+# -----------------------------------------------------------------------------
 _credential = None
 _aci_client = None
 _config = None
 _sb_mgmt_client = None
 
 
+# -----------------------------------------------------------------------------
+# Environment helpers
+# -----------------------------------------------------------------------------
 def _get_env(name: str) -> Optional[str]:
     return os.environ.get(name)
 
@@ -101,6 +126,71 @@ def _get_int_env(name: str, default: int) -> int:
         return default
 
 
+def _get_bool_env(name: str, default: bool) -> bool:
+    value = _get_env(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+# -----------------------------------------------------------------------------
+# Message presence helpers
+# -----------------------------------------------------------------------------
+def _confirm_message_absent(
+    config: Config,
+    message_id: str,
+    max_peek: int,
+    checks: int,
+    interval_seconds: float,
+    subscription_name: Optional[str] = None,
+    sequence_number: Optional[int] = None,
+) -> bool:
+    for _ in range(checks):
+        if _message_exists_in_subscriptions(
+            config, message_id, max_peek, subscription_name, sequence_number
+        ):
+            return False
+        time.sleep(interval_seconds)
+    return True
+
+
+def _message_exists_in_subscriptions(
+    config: Config,
+    message_id: str,
+    max_peek: int,
+    subscription_name: Optional[str] = None,
+    sequence_number: Optional[int] = None,
+) -> bool:
+    if not message_id:
+        return False
+    sb_client = ServiceBusClient.from_connection_string(
+        config.service_bus.connection_str
+    )
+    with sb_client:
+        subscriptions = _list_topic_subscriptions(config)
+        if subscription_name:
+            subscriptions = [
+                sub
+                for sub in subscriptions
+                if getattr(sub, "name", None) == subscription_name
+            ]
+        for subscription in subscriptions:
+            receiver = sb_client.get_subscription_receiver(
+                topic_name=config.service_bus.topic_name,
+                subscription_name=subscription.name,
+            )
+            with receiver:
+                # Note: Azure SDK peek_messages does not support from_sequence_number;
+                # we always peek and match by message_id.
+                messages = receiver.peek_messages(max_message_count=max_peek)
+                if any(str(msg.message_id) == str(message_id) for msg in messages):
+                    return True
+    return False
+
+
+# -----------------------------------------------------------------------------
+# Concurrency helpers
+# -----------------------------------------------------------------------------
 class _ProvisioningLimiter:
     def __init__(self, max_slots: int):
         self._remaining = max_slots
@@ -123,6 +213,9 @@ def _submit_with_context(executor, func, *args, **kwargs):
     return executor.submit(ctx.run, func, *args, **kwargs)
 
 
+# -----------------------------------------------------------------------------
+# Config and client helpers
+# -----------------------------------------------------------------------------
 def _require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
@@ -249,6 +342,9 @@ def _list_topic_subscriptions(config: Config):
     )
 
 
+# -----------------------------------------------------------------------------
+# Provisioning sizing
+# -----------------------------------------------------------------------------
 def _calculate_memory_from_file_size_mb(config: Config, file_size_mb: float) -> float:
     """Calculate memory requirements based on file size in MB.
 
@@ -264,6 +360,9 @@ def _calculate_memory_from_file_size_mb(config: Config, file_size_mb: float) -> 
     return math.ceil(memory_gb * 10) / 10
 
 
+# -----------------------------------------------------------------------------
+# Container group helpers
+# -----------------------------------------------------------------------------
 def _list_relevant_container_groups(config: Config):
     """List container groups in the resource group that were created for this application.
 
@@ -282,6 +381,9 @@ def _list_relevant_container_groups(config: Config):
     return relevant
 
 
+# -----------------------------------------------------------------------------
+# Container state helpers
+# -----------------------------------------------------------------------------
 def _get_container_instance_state(cg: ContainerGroup) -> Optional[str]:
     try:
         for container in getattr(cg, "containers", []) or []:
@@ -346,10 +448,19 @@ def _should_delete_group(cg: ContainerGroup) -> bool:
     }
 
 
-def _existing_message_ids(groups: Iterable[ContainerGroup]) -> set:
-    return {
-        g.tags.get("message_id") for g in groups if g.tags and g.tags.get("message_id")
-    }
+# -----------------------------------------------------------------------------
+# Provisioning helpers
+# -----------------------------------------------------------------------------
+def _existing_message_keys(groups: Iterable[ContainerGroup]) -> set:
+    keys = set()
+    for group in groups:
+        if not group.tags:
+            continue
+        message_id = group.tags.get("message_id")
+        subscription_name = group.tags.get("subscription_name")
+        if message_id and subscription_name:
+            keys.add((str(subscription_name), str(message_id)))
+    return keys
 
 
 def _provision_from_subscription(
@@ -361,16 +472,25 @@ def _provision_from_subscription(
     max_delivery_count: Optional[int] = None,
     existing_ids_lock: Optional[threading.Lock] = None,
     limiter: Optional[_ProvisioningLimiter] = None,
-) -> int:
+) -> Tuple[int, List[str], int, Dict[str, int]]:
     if max_messages <= 0:
-        return 0
+        return 0, [], 0, {}
     if not subscription_name:
         logging.warning("Skipping subscription with missing name")
-        return 0
+        return 0, [], 0, {}
 
     provisioned = 0
+    provisioned_ids = []
+    peeked_count = 0
+    skipped = {
+        "duplicate": 0,
+        "invalid": 0,
+        "missing": 0,
+        "not_present": 0,
+    }
     peek_max_messages = _get_int_env("PROVISIONING_PEEK_MAX", 50)
     peek_count = max(max_messages, peek_max_messages)
+    confirm_message = _get_bool_env("PROVISIONING_CONFIRM_MESSAGE", True)
     owns_client = sb_client is None
     if owns_client:
         sb_client = ServiceBusClient.from_connection_string(
@@ -392,21 +512,12 @@ def _provision_from_subscription(
             subscription_name,
             peek_count,
         )
+        peeked_count = len(messages) if messages is not None else 0
         if not messages:
-            return 0
+            return 0, [], peeked_count, skipped
         for msg in messages:
             try:
                 msg_id = getattr(msg, "message_id", None)
-                # if max_delivery_count is not None:
-                #     delivery_count = getattr(msg, "delivery_count", None)
-                #     if delivery_count is not None and delivery_count >= max_delivery_count:
-                #         logging.warning(
-                #             "Skipping message %s: delivery_count=%s reached max=%s",
-                #             msg.message_id,
-                #             delivery_count,
-                #             max_delivery_count,
-                #         )
-                #         continue
                 payload = _parse_message(msg)
                 logging.info(
                     "Provisioning candidate message_id=%s from subscription=%s",
@@ -415,25 +526,50 @@ def _provision_from_subscription(
                 )
                 if limiter and not limiter.try_acquire():
                     break
+                key = (subscription_name, str(payload["message_id"]))
                 with lock:
-                    if payload["message_id"] in existing_ids:
+                    if key in existing_ids:
                         if limiter:
                             limiter.release()
                         logging.info(
                             "Message %s already provisioned, skipping",
                             payload["message_id"],
                         )
+                        skipped["duplicate"] += 1
                         continue
-                    existing_ids.add(payload["message_id"])
+                    existing_ids.add(key)
                 try:
+                    if confirm_message:
+                        sequence_number = getattr(msg, "sequence_number", None)
+                        if _confirm_message_absent(
+                            config,
+                            payload["message_id"],
+                            peek_count,
+                            1,
+                            0.0,
+                            subscription_name,
+                            sequence_number,
+                        ):
+                            logging.info(
+                                "Skipping provisioning; message %s no longer present in subscription %s",
+                                payload["message_id"],
+                                subscription_name,
+                            )
+                            with lock:
+                                existing_ids.discard(key)
+                            if limiter:
+                                limiter.release()
+                            skipped["not_present"] += 1
+                            continue
                     _create_container_instance(config, payload, subscription_name)
                 except Exception:
                     with lock:
-                        existing_ids.discard(payload["message_id"])
+                        existing_ids.discard(key)
                     if limiter:
                         limiter.release()
                     raise
                 provisioned += 1
+                provisioned_ids.append(payload["message_id"])
                 if provisioned >= max_messages:
                     break
             except ValueError as exc:
@@ -444,6 +580,7 @@ def _provision_from_subscription(
                 )
                 if limiter:
                     limiter.release()
+                skipped["invalid"] += 1
             except AzureError as exc:
                 logging.exception("ACI provisioning error while provisioning: %s", exc)
                 if limiter:
@@ -452,7 +589,7 @@ def _provision_from_subscription(
                 logging.exception("Unexpected error while provisioning: %s", exc)
                 if limiter:
                     limiter.release()
-    return provisioned
+    return provisioned, provisioned_ids, peeked_count, skipped
 
 
 def _parse_message(msg) -> dict:
@@ -475,7 +612,6 @@ def _parse_message(msg) -> dict:
     except Exception as exc:
         raise ValueError(f"Unable to read message body: {exc}") from exc
 
-    data = message_data.get("data") or {}
     message_id = msg.message_id
     if not message_id:
         raise ValueError("message_id is required")
@@ -536,6 +672,9 @@ def _build_container_env(
     return env_vars
 
 
+# -----------------------------------------------------------------------------
+# ACI provisioning
+# -----------------------------------------------------------------------------
 def _create_container_instance(
     config: Config, payload: dict, source_subscription: str
 ) -> str:
@@ -597,8 +736,9 @@ def _create_container_instance(
         image_registry_credentials=image_registry_credentials,
         tags={
             "managed_by": config.azure.aci_name_prefix,
-            "message_id": payload["message_id"],
+            "message_id": str(payload["message_id"]),
             "file_size_mb": str(payload["file_size_mb"]),
+            "subscription_name": source_subscription,
         },
     )
 
@@ -625,19 +765,23 @@ def _create_container_instance(
         )
         return group_name
 
-    provisioning_state = _get_container_state(result)
-    if provisioning_state in {"Succeeded", "Running"}:
+    group_provisioning = getattr(result, "provisioning_state", None)
+    container_state = _get_container_state(result)
+    if group_provisioning == "Succeeded" or container_state in {"Succeeded", "Running"}:
         logging.info(f"Successfully provisioned {group_name}")
     else:
         logging.error(
-            "Provisioning failed with status %s (state=%s)",
-            poller.status(),
-            provisioning_state,
+            "Provisioning failed (provisioning_state=%s container_state=%s)",
+            group_provisioning,
+            container_state,
         )
 
     return group_name
 
 
+# -----------------------------------------------------------------------------
+# Cleanup helpers
+# -----------------------------------------------------------------------------
 def _delete_container_group(config: Config, name: str):
     _log_container_tail(config, name, tail=20, retries=3, delay_seconds=1.5)
     logging.info(f"Deleting container group {name}")
@@ -711,6 +855,9 @@ def _log_container_tail(
             time.sleep(delay_seconds)
 
 
+# -----------------------------------------------------------------------------
+# Scaling logic
+# -----------------------------------------------------------------------------
 def _scale_subscription():
     """Scale logic:
     - Receive messages
@@ -745,7 +892,7 @@ def _scale_subscription():
             len(terminal_groups),
         )
 
-        existing_ids = _existing_message_ids(groups)
+        existing_ids = _existing_message_keys(active_groups)
 
         # 2) Peek messages by subscription and spin containers
         try:
@@ -816,11 +963,26 @@ def _scale_subscription():
                 }
                 for future in as_completed(futures):
                     sub_name = futures[future]
-                    count = future.result()
+                    result = future.result()
+                    if isinstance(result, tuple):
+                        if len(result) == 4:
+                            count, ids, peeked, skipped = result
+                        elif len(result) == 3:
+                            count, ids, peeked = result
+                            skipped = None
+                        else:
+                            count, ids = result
+                            peeked = None
+                            skipped = None
+                    else:
+                        count, ids, peeked, skipped = result, [], None, None
                     logging.info(
-                        "Pass 1 provisioned %s message(s) from %s",
+                        "Pass 1 provisioned %s message(s) from %s. message_ids=%s peeked=%s skipped=%s",
                         count,
                         sub_name,
+                        ids,
+                        peeked,
+                        skipped,
                     )
                     provisioned_pass1 += count
 
@@ -848,11 +1010,26 @@ def _scale_subscription():
                     }
                     for future in as_completed(futures):
                         sub_name = futures[future]
-                        count = future.result()
+                        result = future.result()
+                        if isinstance(result, tuple):
+                            if len(result) == 4:
+                                count, ids, peeked, skipped = result
+                            elif len(result) == 3:
+                                count, ids, peeked = result
+                                skipped = None
+                            else:
+                                count, ids = result
+                                peeked = None
+                                skipped = None
+                        else:
+                            count, ids, peeked, skipped = result, [], None, None
                         logging.info(
-                            "Pass 2 provisioned %s message(s) from %s",
+                            "Pass 2 provisioned %s message(s) from %s. message_ids=%s peeked=%s skipped=%s",
                             count,
                             sub_name,
+                            ids,
+                            peeked,
+                            skipped,
                         )
                         provisioned_pass2 += count
 
@@ -869,9 +1046,15 @@ def _scale_subscription():
                 exc,
             )
 
-        # 3) Delete terminal containers to clean up (after provisioning)
+        # 3) Delete terminal containers (and optional orphan cleanup).
         if groups:
             logging.info("Evaluating %s container groups for deletion", len(groups))
+            delete_orphans = _get_bool_env("PROVISIONING_DELETE_ORPHANS", True)
+            orphan_peek_max = _get_int_env("PROVISIONING_ORPHAN_PEEK_MAX", 50)
+            orphan_checks = _get_int_env("PROVISIONING_ORPHAN_CONFIRM_CHECKS", 2)
+            orphan_check_interval = float(
+                _get_int_env("PROVISIONING_ORPHAN_CONFIRM_INTERVAL_SECONDS", 5)
+            )
             for group in groups:
                 try:
                     try:
@@ -880,8 +1063,34 @@ def _scale_subscription():
                         )
                     except ResourceNotFoundError:
                         continue
+                    container_state = _get_container_instance_state(fresh_group)
+                    if delete_orphans and container_state == "Running":
+                        message_id = (
+                            fresh_group.tags.get("message_id")
+                            if fresh_group.tags
+                            else None
+                        )
+                        subscription_name = (
+                            fresh_group.tags.get("subscription_name")
+                            if fresh_group.tags
+                            else None
+                        )
+                        if message_id and _confirm_message_absent(
+                            config,
+                            message_id,
+                            orphan_peek_max,
+                            orphan_checks,
+                            orphan_check_interval,
+                            subscription_name,
+                        ):
+                            logging.info(
+                                "Deleting orphan container %s (message_id=%s not found)",
+                                group.name,
+                                message_id,
+                            )
+                            _delete_container_group(config, group.name)
+                            continue
                     if not _should_delete_group(fresh_group):
-                        container_state = _get_container_instance_state(fresh_group)
                         provisioning_state = getattr(
                             fresh_group, "provisioning_state", "Unknown"
                         )
@@ -918,7 +1127,7 @@ def _scale_subscription():
 
 @app.timer_trigger(schedule="0 */1 * * * *", arg_name="mytimer")
 def main(mytimer: func.TimerRequest, context: func.Context) -> None:
-    version = 5
+    version = 14
     INVOCATION_ID.set(getattr(context, "invocation_id", None))
     logging.info(
         "===== SCALER TRIGGERED - STARTING EXECUTION - VERSION %s =====", version

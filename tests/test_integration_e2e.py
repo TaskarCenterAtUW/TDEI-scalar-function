@@ -334,9 +334,9 @@ def test_end_to_end_happy_flow(pytestconfig):
             assert (
                 terminal_group is not None
             ), "Container group did not reach terminal state"
-            terminal_states_by_group[group_name] = app._get_container_state(
-                terminal_group
-            )
+            terminal_states_by_group[
+                group_name
+            ] = app._get_container_instance_state(terminal_group)
 
         LOGGER.info("Triggering scale logic for cleanup")
         app._scale_subscription()

@@ -171,7 +171,8 @@ def test_parse_message_non_numeric_file_size():
 
 
 def test_split_container_groups_terminal_vs_active():
-    """Category: Container Groups | Split container groups into active and terminal."""
+    """Category: Container Groups | Split by container instance state; terminal = Terminated or Failed only."""
+    # Group with instance_view.state Succeeded (no containers[]) falls back to group state
     succeeded = types.SimpleNamespace(
         instance_view=types.SimpleNamespace(state="Succeeded"),
         provisioning_state="Running",
@@ -180,24 +181,94 @@ def test_split_container_groups_terminal_vs_active():
         instance_view=types.SimpleNamespace(state="Running"),
         provisioning_state="Running",
     )
-    failed = types.SimpleNamespace(instance_view=None, provisioning_state="Failed")
+    # Terminal: container instance state Failed or Terminated
+    failed = types.SimpleNamespace(
+        provisioning_state="Failed",
+        containers=[
+            types.SimpleNamespace(
+                instance_view=types.SimpleNamespace(
+                    current_state=types.SimpleNamespace(state="Failed")
+                )
+            )
+        ],
+    )
+    terminated = types.SimpleNamespace(
+        provisioning_state="Succeeded",
+        containers=[
+            types.SimpleNamespace(
+                instance_view=types.SimpleNamespace(
+                    current_state=types.SimpleNamespace(state="Terminated")
+                )
+            )
+        ],
+    )
 
-    active, terminal = app._split_container_groups([succeeded, running, failed])
+    active, terminal = app._split_container_groups([succeeded, running, failed, terminated])
     assert running in active
-    assert succeeded in terminal
+    assert succeeded in active  # Succeeded is not in {Terminated, Failed}, so active
     assert failed in terminal
+    assert terminated in terminal
 
 
-def test_existing_message_ids_collects_tags():
-    """Category: Container Groups | Collect existing message_id tags from groups."""
-    group1 = types.SimpleNamespace(tags={"message_id": "a"})
-    group2 = types.SimpleNamespace(tags={"message_id": "b"})
-    group3 = types.SimpleNamespace(tags={})
-    assert app._existing_message_ids([group1, group2, group3]) == {"a", "b"}
+def test_should_delete_group_requires_both_states_terminal():
+    """Category: Container Groups | Delete only when container and provisioning state are terminal."""
+    # Both terminal -> delete
+    term = types.SimpleNamespace(
+        name="g1",
+        provisioning_state="Succeeded",
+        containers=[
+            types.SimpleNamespace(
+                instance_view=types.SimpleNamespace(
+                    current_state=types.SimpleNamespace(state="Terminated")
+                )
+            )
+        ],
+    )
+    assert app._should_delete_group(term) is True
+
+    # Container running -> do not delete
+    running = types.SimpleNamespace(
+        name="g2",
+        provisioning_state="Succeeded",
+        containers=[
+            types.SimpleNamespace(
+                instance_view=types.SimpleNamespace(
+                    current_state=types.SimpleNamespace(state="Running")
+                )
+            )
+        ],
+    )
+    assert app._should_delete_group(running) is False
+
+    # Provisioning still in progress -> do not delete
+    creating = types.SimpleNamespace(
+        name="g3",
+        provisioning_state="Creating",
+        containers=[
+            types.SimpleNamespace(
+                instance_view=types.SimpleNamespace(
+                    current_state=types.SimpleNamespace(state="Terminated")
+                )
+            )
+        ],
+    )
+    assert app._should_delete_group(creating) is False
+
+
+def test_existing_message_keys_collects_tags():
+    """Category: Container Groups | Collect (subscription_name, message_id) keys from group tags."""
+    group1 = types.SimpleNamespace(tags={"message_id": "a", "subscription_name": "sub1"})
+    group2 = types.SimpleNamespace(tags={"message_id": "b", "subscription_name": "sub1"})
+    group3 = types.SimpleNamespace(tags={"message_id": "a", "subscription_name": "sub2"})
+    group4 = types.SimpleNamespace(tags={})
+    group5 = types.SimpleNamespace(tags={"message_id": "x"})  # no subscription_name
+    keys = app._existing_message_keys([group1, group2, group3, group4, group5])
+    assert keys == {("sub1", "a"), ("sub1", "b"), ("sub2", "a")}
 
 
 def test_provision_from_subscription_respects_max_and_skips_duplicates(monkeypatch):
-    """Category: Provisioning | Provision only new messages and respect max count."""
+    """Category: Provisioning | Provision only new messages and respect max count (subscription-scoped duplicate key)."""
+    monkeypatch.setenv("PROVISIONING_CONFIRM_MESSAGE", "false")
     config = _make_config()
     messages = [
         FakeMessage(
@@ -222,8 +293,8 @@ def test_provision_from_subscription_respects_max_and_skips_duplicates(monkeypat
 
     monkeypatch.setattr(app, "_create_container_instance", fake_create)
 
-    existing = {"dup"}
-    provisioned = app._provision_from_subscription(
+    existing = {("subA", "dup")}
+    provisioned, _, _, _ = app._provision_from_subscription(
         config,
         sb_client,
         "subA",
@@ -238,6 +309,7 @@ def test_provision_from_subscription_respects_max_and_skips_duplicates(monkeypat
 
 def test_provision_from_subscription_skips_invalid_messages(monkeypatch):
     """Category: Provisioning | Skip invalid messages and continue provisioning."""
+    monkeypatch.setenv("PROVISIONING_CONFIRM_MESSAGE", "false")
     config = _make_config()
     messages = [
         FakeMessage(
@@ -262,7 +334,7 @@ def test_provision_from_subscription_skips_invalid_messages(monkeypatch):
 
     monkeypatch.setattr(app, "_create_container_instance", fake_create)
 
-    provisioned = app._provision_from_subscription(
+    provisioned, _, _, _ = app._provision_from_subscription(
         config,
         sb_client,
         "subA",
@@ -359,7 +431,7 @@ def test_scale_subscription_provisions_deterministic_passes(monkeypatch):
         limiter=None,
     ):
         calls.append((subscription_name, max_messages))
-        return 1
+        return 1, ["msg"], 1, {}
 
     monkeypatch.setattr(app, "_provision_from_subscription", fake_provision)
 

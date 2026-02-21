@@ -29,6 +29,12 @@ See `.env` for a full, working example. Key groups:
 - Optional processing control:
   - `SKIP_SUBSCRIPTIONS` (comma-separated subscription names to skip)
   - `PROVISIONING_MAX_WORKERS` (max parallel workers for provisioning, default 4)
+  - `PROVISIONING_PEEK_MAX` (max messages to peek per subscription, default 50)
+  - `PROVISIONING_CONFIRM_MESSAGE` (confirm message still present before provisioning via peek + message_id match; default true; Azure SDK does not support `from_sequence_number` on peek)
+  - `PROVISIONING_DELETE_ORPHANS` (delete running containers when tagged message is absent in that subscription, default true)
+  - `PROVISIONING_ORPHAN_PEEK_MAX` (peek size for orphan detection, default 50)
+  - `PROVISIONING_ORPHAN_CONFIRM_CHECKS` (absent checks before orphan delete, default 2)
+  - `PROVISIONING_ORPHAN_CONFIRM_INTERVAL_SECONDS` (seconds between checks, default 5)
 - Container env pass-through:
   - Set any `INSTANCE_*` variables and they will be passed to the container
     without the `INSTANCE_` prefix.
@@ -52,15 +58,15 @@ Example:
 
 ## How it works
 - Lists container groups tagged with `managed_by = ACI_NAME_PREFIX`.
-- Splits into active vs terminal groups.
-- Skips provisioning if a `message_id` already exists in active or terminal
-  container tags.
+- Splits into active vs terminal groups (terminal = container instance state `Failed` or `Terminated`).
+- Skips provisioning if the same `(subscription_name, message_id)` already exists in active container tags (subscription-scoped duplicate detection; `message_id` is normalized to string).
 - Peeks messages (does not settle them).
 - Provisions in parallel across subscriptions (bounded by `PROVISIONING_MAX_WORKERS`).
 - Filters out subscriptions listed in `SKIP_SUBSCRIPTIONS`.
 - Creates an ACI group per message with tags:
-  `managed_by`, `message_id`, `file_size_mb`.
-- Deletes terminal containers after provisioning (state `Terminated` or `Failed`).
+  `managed_by`, `message_id`, `file_size_mb`, `subscription_name`.
+- Deletes containers only when both container instance state and provisioning state are terminal (e.g. container `Failed`/`Terminated` and provisioning `Succeeded`/`Failed`/`Terminated`).
+- Optionally deletes running containers when the tagged message is absent in that subscription (orphan cleanup).
 - Captures the last 20 log lines from each container before deletion.
 
 ## Integration test
