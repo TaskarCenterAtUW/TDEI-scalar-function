@@ -918,8 +918,11 @@ def _scale_subscription():
 
 @app.timer_trigger(schedule="0 */1 * * * *", arg_name="mytimer")
 def main(mytimer: func.TimerRequest, context: func.Context) -> None:
-    version = 3
-    logging.info("===== SCALER TRIGGERED - STARTING EXECUTION - VERSION {version} =====")
+    version = 5
+    INVOCATION_ID.set(getattr(context, "invocation_id", None))
+    logging.info(
+        "===== SCALER TRIGGERED - STARTING EXECUTION - VERSION %s =====", version
+    )
     config = _get_config()
     _log_config_summary(config)
 
@@ -932,4 +935,7 @@ def main(mytimer: func.TimerRequest, context: func.Context) -> None:
         logging.exception(e)
         raise
 
-    logging.info(f"===== SCALER EXECUTION COMPLETED VERSION {version}=====")
+    logging.info(
+        "===== SCALER EXECUTION COMPLETED VERSION %s =====",
+        version,
+    )
