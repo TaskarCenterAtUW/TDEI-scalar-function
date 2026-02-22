@@ -35,6 +35,7 @@ Service Bus
 - `SB_NAMESPACE` (optional if it can be derived from connection string)
 - `SB_TOPIC_NAME`
 - `SKIP_SUBSCRIPTIONS` (optional comma-separated list of subscription names to skip)
+- `PROVISIONING_BATCH_SIZE` (optional max messages to provision per invocation, default 10; avoids timeout)
 - `PROVISIONING_MAX_WORKERS` (optional max parallel workers, default 4)
 - `PROVISIONING_PEEK_MAX` (optional max peek batch size per subscription, default 50)
 - `PROVISIONING_CONFIRM_MESSAGE` (optional confirm message still present before provisioning, default true)
@@ -74,7 +75,7 @@ Only two fields are required; other properties are ignored and may vary by servi
 ## Provisioning flow
 1. List container groups tagged with `managed_by = ACI_NAME_PREFIX`.
 2. Split list into active vs terminal states (terminal = container instance state `Failed` or `Terminated`).
-3. Compute remaining capacity: `ACI_MAX_INSTANCES - active_count`.
+3. Compute remaining capacity: `ACI_MAX_INSTANCES - active_count`; cap at `PROVISIONING_BATCH_SIZE` (default 10) so each invocation provisions at most that many messages (avoids function timeout).
 4. Build existing keys from active groups: `(subscription_name, message_id)` (both normalized to string).
 5. Skip provisioning if `(subscription_name, message_id)` already exists in active container tags.
 6. Calculate memory: `(file_size_mb / 1024) * ACI_MEMORY_MULTIPLIER`, clamped by min/max,
@@ -102,9 +103,14 @@ Only two fields are required; other properties are ignored and may vary by servi
 - Topic messages are filtered and messages are available in right subscription, when we provision we set the container
   instance to pick messages from same subscription. Ensuring container service picks right message for which it is provisioned. 
 
+## Function timeout
+- Timer function timeout is set to 10 minutes in `host.json` (Consumption plan maximum). If a run exceeds this, the host cancels the invocation.
+- For longer-running workloads, use a Premium or Dedicated App Service plan (no runtime timeout), or reduce work per run (e.g. fewer subscriptions or instances).
+
 ## Crash / failure scenarios
 - **Function crash after provisioning**: the container still exists and is tracked via tags.
 - **Provisioning failure**: logged and does not stop other subscriptions from being processed.
+- **Function timeout**: run is cancelled after the configured timeout; next timer run will retry.
 - **Deleting containers**: cleaned up on each run.
 - **Service Bus errors**: logged; the run completes without provisioning.
 

@@ -28,6 +28,7 @@ See `.env` for a full, working example. Key groups:
   - `SB_TOPIC_NAME` (required)
 - Optional processing control:
   - `SKIP_SUBSCRIPTIONS` (comma-separated subscription names to skip)
+  - `PROVISIONING_BATCH_SIZE` (max messages to provision per function invocation, default 10; keeps runs within timeout)
   - `PROVISIONING_MAX_WORKERS` (max parallel workers for provisioning, default 4)
   - `PROVISIONING_PEEK_MAX` (max messages to peek per subscription, default 50)
   - `PROVISIONING_CONFIRM_MESSAGE` (confirm message still present before provisioning via peek + message_id match; default true)
@@ -117,6 +118,9 @@ Use `repository_dispatch` with event type `service-deploy`:
 The service workflow maps `dev`, `stage`, and `main` branches to their respective
 Function App name + resource group (example in `docs/service-workflow-example.yml`).
 ACR can remain shared.
+
+## Function timeout
+The timer function timeout is set to **10 minutes** in `host.json` (`functionTimeout`: `00:10:00`), which is the maximum for the Consumption plan. Provisioning is capped at **`PROVISIONING_BATCH_SIZE`** (default 10) messages per invocation so each run stays within the timeout. If runs still time out, use a **Premium or Dedicated** plan or lower the batch size / `ACI_MAX_INSTANCES`.
 
 ## Deploy scaler code (manual)
 `.github/workflows/deploy-scaler-code.yml` deploys this repo to the Function App
