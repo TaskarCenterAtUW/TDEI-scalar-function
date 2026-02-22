@@ -30,7 +30,7 @@ See `.env` for a full, working example. Key groups:
   - `SKIP_SUBSCRIPTIONS` (comma-separated subscription names to skip)
   - `PROVISIONING_MAX_WORKERS` (max parallel workers for provisioning, default 4)
   - `PROVISIONING_PEEK_MAX` (max messages to peek per subscription, default 50)
-  - `PROVISIONING_CONFIRM_MESSAGE` (confirm message still present before provisioning via peek + message_id match; default true; Azure SDK does not support `from_sequence_number` on peek)
+  - `PROVISIONING_CONFIRM_MESSAGE` (confirm message still present before provisioning via peek + message_id match; default true)
   - `PROVISIONING_DELETE_ORPHANS` (delete running containers when tagged message is absent in that subscription, default true)
   - `PROVISIONING_ORPHAN_PEEK_MAX` (peek size for orphan detection, default 50)
   - `PROVISIONING_ORPHAN_CONFIRM_CHECKS` (absent checks before orphan delete, default 2)

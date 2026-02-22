@@ -66,7 +66,7 @@ Only two fields are required; other properties are ignored and may vary by servi
 - Subscriptions listed in `SKIP_SUBSCRIPTIONS` are filtered out before processing.
 - Each subscription peek can look ahead up to `PROVISIONING_PEEK_MAX` to skip
   duplicates and reach the next unprocessed message.
-- When `PROVISIONING_CONFIRM_MESSAGE=true`, the scaler confirms the message is still present before provisioning by peeking again and matching `message_id` (the Azure SDK does not support `from_sequence_number` on peek).
+- When `PROVISIONING_CONFIRM_MESSAGE=true`, the scaler confirms the message is still present before provisioning by peeking again and matching `message_id`.
 - Pass 1 provisions at most one message per subscription.
 - Pass 2 fills remaining capacity with more messages, still in order.
 - Scaler triggers every minute and the same process repeats.

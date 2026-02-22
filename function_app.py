@@ -143,11 +143,10 @@ def _confirm_message_absent(
     checks: int,
     interval_seconds: float,
     subscription_name: Optional[str] = None,
-    sequence_number: Optional[int] = None,
 ) -> bool:
     for _ in range(checks):
         if _message_exists_in_subscriptions(
-            config, message_id, max_peek, subscription_name, sequence_number
+            config, message_id, max_peek, subscription_name
         ):
             return False
         time.sleep(interval_seconds)
@@ -159,7 +158,6 @@ def _message_exists_in_subscriptions(
     message_id: str,
     max_peek: int,
     subscription_name: Optional[str] = None,
-    sequence_number: Optional[int] = None,
 ) -> bool:
     if not message_id:
         return False
@@ -469,7 +467,6 @@ def _provision_from_subscription(
     subscription_name: str,
     max_messages: int,
     existing_ids: set,
-    max_delivery_count: Optional[int] = None,
     existing_ids_lock: Optional[threading.Lock] = None,
     limiter: Optional[_ProvisioningLimiter] = None,
 ) -> Tuple[int, List[str], int, Dict[str, int]]:
@@ -540,7 +537,6 @@ def _provision_from_subscription(
                     existing_ids.add(key)
                 try:
                     if confirm_message:
-                        sequence_number = getattr(msg, "sequence_number", None)
                         if _confirm_message_absent(
                             config,
                             payload["message_id"],
@@ -548,7 +544,6 @@ def _provision_from_subscription(
                             1,
                             0.0,
                             subscription_name,
-                            sequence_number,
                         ):
                             logging.info(
                                 "Skipping provisioning; message %s no longer present in subscription %s",
@@ -955,7 +950,6 @@ def _scale_subscription():
                         subscription.name,
                         1,
                         existing_ids,
-                        getattr(subscription, "max_delivery_count", None),
                         existing_ids_lock,
                         pass1_limiter,
                     ): subscription.name
@@ -1002,7 +996,6 @@ def _scale_subscription():
                             subscription.name,
                             remaining_slots,
                             existing_ids,
-                            getattr(subscription, "max_delivery_count", None),
                             existing_ids_lock,
                             pass2_limiter,
                         ): subscription.name

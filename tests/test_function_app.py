@@ -300,7 +300,6 @@ def test_provision_from_subscription_respects_max_and_skips_duplicates(monkeypat
         "subA",
         max_messages=2,
         existing_ids=existing,
-        max_delivery_count=10,
     )
 
     assert provisioned == 1
@@ -340,7 +339,6 @@ def test_provision_from_subscription_skips_invalid_messages(monkeypatch):
         "subA",
         max_messages=2,
         existing_ids=set(),
-        max_delivery_count=10,
     )
 
     assert provisioned == 1
@@ -399,8 +397,8 @@ def test_scale_subscription_provisions_deterministic_passes(monkeypatch):
         app,
         "_list_topic_subscriptions",
         lambda _cfg: [
-            types.SimpleNamespace(name="a", max_delivery_count=10),
-            types.SimpleNamespace(name="b", max_delivery_count=10),
+            types.SimpleNamespace(name="a"),
+            types.SimpleNamespace(name="b"),
         ],
     )
 
@@ -426,7 +424,6 @@ def test_scale_subscription_provisions_deterministic_passes(monkeypatch):
         subscription_name,
         max_messages,
         existing_ids,
-        max_delivery_count,
         existing_ids_lock=None,
         limiter=None,
     ):
