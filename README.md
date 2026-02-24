@@ -139,11 +139,8 @@ Note: code deployment does not modify Function App settings.
 flowchart TD
   A[Service PR merged to dev] --> B[Service workflow: Build image]
   B --> C[Push image to ACR]
-  C --> D[Trigger scaler repo via repository_dispatch]
-
-  D --> E[Scaler workflow: deploy-scaler.yml]
-  E --> F[Azure login (OIDC)]
-  F --> G[Update Function App settings]
-  G --> H[Set ACI_IMAGE + app_settings_json]
-  H --> I[Restart Function App]
+  C --> D[Azure login]
+  D --> E[Update Function App settings]
+  E --> F[Set ACI_IMAGE + app_settings_json]
+  F --> G[Restart Function App]
 ```
