@@ -89,48 +89,20 @@ Run:
 
 - `pytest -m integration tests/test_integration_e2e.py --e2e-file-sizes 50,180,500,1024 --e2e-expected-subscriptions 1-50MB,51-200MB,201-600MB,601-1GB --e2e-timeout-seconds 900`
 
-## Deployment workflow 
-This repo includes `.github/workflows/deploy-scaler.yml` to update the scaler
-Function App when a service build completes.
-
-### Inputs
-- `function_app_name` (required)
-- `resource_group` (required)
-- `aci_image` (required)
-- `app_settings_json` (optional JSON string of extra env vars)
-- `restart_app` (optional, default true)
-Note: app settings updates are additive. Only the keys provided are updated;
-existing Function App settings are not cleared.
-Secrets:
-- `TDEI_CORE_AZURE_CREDS`
-
-### Trigger from a service repo
-Use `repository_dispatch` with event type `service-deploy`:
-```json
-{
-  "event_type": "service-deploy",
-  "client_payload": {
-    "function_app_name": "my-scaler-func",
-    "resource_group": "my-rg",
-    "aci_image": "myregistry.azurecr.io/myservice:2025-02-10",
-    "app_settings_json": "{\"INSTANCE_SUBSCRIPTION_ENV_NAME\":\"VALIDATION_REQ_SUB\",\"INSTANCE_FOO\":\"bar\"}",
-    "restart_app": "true"
-  }
-}
-```
-
-### Multi-environment (single workflow)
-The service workflow maps `dev`, `stage`, and `main` branches to their respective
-Function App name + resource group (example in `docs/service-workflow-example.yml`).
-ACR can remain shared.
-
 ## Function timeout
 The timer function timeout is set to **10 minutes** in `host.json` (`functionTimeout`: `00:10:00`), which is the maximum for the Consumption plan. Provisioning is capped at **`PROVISIONING_BATCH_SIZE`** (default 10) messages per invocation so each run stays within the timeout. If runs still time out, use a **Premium or Dedicated** plan or lower the batch size / `ACI_MAX_INSTANCES`.
 
 ## Deploy scaler code (manual)
 `.github/workflows/deploy-scaler-code.yml` deploys this repo to the Function App
-via manual `workflow_dispatch`. It uses the following secret:
+via manual `workflow_dispatch`.
+
+Inputs:
+- `function_app_name` (required)
+- `resource_group` (required)
+
+Secret:
 - `TDEI_CORE_AZURE_CREDS`
+
 Note: code deployment does not modify Function App settings.
 
 ## Service & Scalar Integration Flow Diagram
