@@ -39,15 +39,18 @@ Service Bus
 - `PROVISIONING_MAX_WORKERS` (optional max parallel workers, default 4)
 - `PROVISIONING_PEEK_MAX` (optional max peek batch size per subscription, default 50)
 - `PROVISIONING_CONFIRM_MESSAGE` (optional confirm message still present before provisioning, default true)
-- `PROVISIONING_DELETE_ORPHANS` (optional delete running containers with missing messages, default true)
-- `PROVISIONING_ORPHAN_PEEK_MAX` (optional peek size for orphan detection, default 50)
-- `PROVISIONING_ORPHAN_CONFIRM_CHECKS` (optional absence checks before orphan delete, default 2)
-- `PROVISIONING_ORPHAN_CONFIRM_INTERVAL_SECONDS` (optional seconds between checks, default 5)
+- `PROVISIONING_IN_FLIGHT_MESSAGE_CHECK` (optional check message presence while ACI provisioning is in progress, default true)
+- `PROVISIONING_IN_FLIGHT_PEEK_MAX` (optional peek size for in-flight presence checks, default 100)
+- `PROVISIONING_IN_FLIGHT_CHECK_INTERVAL_SECONDS` (optional seconds between in-flight checks, default 1)
+- `PROVISIONING_POST_CREATE_PEEK_MAX` (optional peek size for post-provision presence check, default 100)
+- `PROVISIONING_POST_CREATE_CONFIRM_CHECKS` (optional absence checks after provisioning before deleting, default 1)
+- `PROVISIONING_POST_CREATE_CONFIRM_INTERVAL_SECONDS` (optional seconds between post-create checks, default 0)
+- `PROVISIONING_ORPHAN_EMPTY_SUB_PEEK_MAX` (optional peek size for running-orphan check when subscription is empty, default 1)
 
 ### Service Bus message (required fields for scaler)
 Only two fields are required; other properties are ignored and may vary by service.
 
-- `messageId` from Service Bus metadata
+- `messageId` from Service Bus metadata (`message_id` in SDK object)
 - `file_size_mb` from Service Bus application properties
 ```json
 {
@@ -68,6 +71,8 @@ Only two fields are required; other properties are ignored and may vary by servi
 - Each subscription peek can look ahead up to `PROVISIONING_PEEK_MAX` to skip
   duplicates and reach the next unprocessed message.
 - When `PROVISIONING_CONFIRM_MESSAGE=true`, the scaler confirms the message is still present before provisioning by peeking again and matching `message_id`.
+- During ACI provisioning wait, the scaler can re-check message presence (`PROVISIONING_IN_FLIGHT_MESSAGE_CHECK`); if absent, it deletes the in-progress container group and stops waiting.
+- After ACI provisioning reports success, the scaler re-checks message presence and deletes newly provisioned containers if message is absent.
 - Pass 1 provisions at most one message per subscription.
 - Pass 2 fills remaining capacity with more messages, still in order.
 - Scaler triggers every minute and the same process repeats.
@@ -85,8 +90,10 @@ Only two fields are required; other properties are ignored and may vary by servi
    - `message_id`
    - `file_size_mb`
    - `subscription_name`
-8. Delete a container only when **both** container instance state and provisioning state are terminal (e.g. container `Failed`/`Terminated` and provisioning `Succeeded`/`Failed`/`Terminated`). Capture last 20 lines of container logs before deletion.
-9. Optionally delete running containers when the tagged message is absent in that subscription (orphan cleanup).
+8. While waiting for provision completion, optionally poll Service Bus for message presence; if missing, delete the just-created container and abort this provision result.
+9. After successful provisioning, verify message is still present; if missing, delete the new container.
+10. Delete a container when **both** container instance state and provisioning state are terminal (e.g. container `Failed`/`Terminated` and provisioning `Succeeded`/`Failed`/`Terminated`). Capture last 20 lines of container logs before deletion.
+11. Running orphan cleanup: if a running container has `message_id` + `subscription_name` tags and the tagged subscription is empty, delete that running container.
 
 ## Validations
 - Rejects messages if JSON cannot be parsed.

@@ -186,6 +186,26 @@ def _message_exists_in_subscriptions(
     return False
 
 
+def _subscription_is_empty(
+    config: Config,
+    subscription_name: str,
+    max_peek: int = 1,
+) -> bool:
+    if not subscription_name:
+        return False
+    sb_client = ServiceBusClient.from_connection_string(
+        config.service_bus.connection_str
+    )
+    with sb_client:
+        receiver = sb_client.get_subscription_receiver(
+            topic_name=config.service_bus.topic_name,
+            subscription_name=subscription_name,
+        )
+        with receiver:
+            messages = receiver.peek_messages(max_message_count=max(1, max_peek))
+            return not bool(messages)
+
+
 # -----------------------------------------------------------------------------
 # Concurrency helpers
 # -----------------------------------------------------------------------------
@@ -485,7 +505,7 @@ def _provision_from_subscription(
         "missing": 0,
         "not_present": 0,
     }
-    peek_max_messages = _get_int_env("PROVISIONING_PEEK_MAX", 50)
+    peek_max_messages = _get_int_env("PROVISIONING_PEEK_MAX", 100)
     peek_count = max(max_messages, peek_max_messages)
     confirm_message = _get_bool_env("PROVISIONING_CONFIRM_MESSAGE", True)
     owns_client = sb_client is None
@@ -556,7 +576,24 @@ def _provision_from_subscription(
                                 limiter.release()
                             skipped["not_present"] += 1
                             continue
-                    _create_container_instance(config, payload, subscription_name)
+                    create_result = _create_container_instance(
+                        config, payload, subscription_name
+                    )
+                    if isinstance(create_result, tuple):
+                        _, kept = create_result
+                    else:
+                        kept = True
+                    if not kept:
+                        logging.info(
+                            "Container removed after provisioning because message %s is no longer present",
+                            payload["message_id"],
+                        )
+                        with lock:
+                            existing_ids.discard(key)
+                        if limiter:
+                            limiter.release()
+                        skipped["not_present"] += 1
+                        continue
                 except Exception:
                     with lock:
                         existing_ids.discard(key)
@@ -672,7 +709,7 @@ def _build_container_env(
 # -----------------------------------------------------------------------------
 def _create_container_instance(
     config: Config, payload: dict, source_subscription: str
-) -> str:
+) -> Tuple[str, bool]:
     """Create an Azure Container Instance configured to process the request.
 
     The container receives the message details via environment variables.
@@ -744,12 +781,41 @@ def _create_container_instance(
         config.azure.resource_group, group_name, group
     )
 
+    message_id = str(payload["message_id"])
+    in_flight_check_enabled = _get_bool_env(
+        "PROVISIONING_IN_FLIGHT_MESSAGE_CHECK", True
+    )
+    in_flight_peek_max = _get_int_env("PROVISIONING_IN_FLIGHT_PEEK_MAX", 100)
+    in_flight_check_interval_seconds = max(
+        0, _get_int_env("PROVISIONING_IN_FLIGHT_CHECK_INTERVAL_SECONDS", 1)
+    )
+    next_in_flight_check_at = time.monotonic() + in_flight_check_interval_seconds
+
     previous_status = None
     while not poller.done():
         current_status = poller.status()
         if previous_status != current_status:
             logging.info(f"Provisioning ACI {group_name}... Status: {current_status}")
             previous_status = current_status
+        if in_flight_check_enabled and time.monotonic() >= next_in_flight_check_at:
+            if _confirm_message_absent(
+                config,
+                message_id,
+                in_flight_peek_max,
+                1,
+                0.0,
+                source_subscription,
+            ):
+                logging.info(
+                    "Message %s no longer present while provisioning %s; deleting container and stopping wait",
+                    message_id,
+                    group_name,
+                )
+                _delete_container_group(config, group_name)
+                return group_name, False
+            next_in_flight_check_at = (
+                time.monotonic() + in_flight_check_interval_seconds
+            )
         time.sleep(1)  # Check every 1 seconds
 
     try:
@@ -758,7 +824,7 @@ def _create_container_instance(
         logging.error(
             "Provisioning failed with status %s: %s", poller.status(), exc
         )
-        return group_name
+        return group_name, False
 
     group_provisioning = getattr(result, "provisioning_state", None)
     container_state = _get_container_state(result)
@@ -770,8 +836,30 @@ def _create_container_instance(
             group_provisioning,
             container_state,
         )
+        return group_name, False
 
-    return group_name
+    post_create_peek_max = _get_int_env("PROVISIONING_POST_CREATE_PEEK_MAX", 100)
+    post_create_checks = _get_int_env("PROVISIONING_POST_CREATE_CONFIRM_CHECKS", 1)
+    post_create_interval_seconds = float(
+        _get_int_env("PROVISIONING_POST_CREATE_CONFIRM_INTERVAL_SECONDS", 0)
+    )
+    if _confirm_message_absent(
+        config,
+        message_id,
+        post_create_peek_max,
+        post_create_checks,
+        post_create_interval_seconds,
+        source_subscription,
+    ):
+        logging.info(
+            "Deleting newly provisioned container %s; message_id=%s is no longer present",
+            group_name,
+            message_id,
+        )
+        _delete_container_group(config, group_name)
+        return group_name, False
+
+    return group_name, True
 
 
 # -----------------------------------------------------------------------------
@@ -1052,14 +1140,11 @@ def _scale_subscription():
                 exc,
             )
 
-        # 3) Delete terminal containers (and optional orphan cleanup).
+        # 3) Delete terminal containers.
         if groups:
             logging.info("Evaluating %s container groups for deletion", len(groups))
-            delete_orphans = _get_bool_env("PROVISIONING_DELETE_ORPHANS", True)
-            orphan_peek_max = _get_int_env("PROVISIONING_ORPHAN_PEEK_MAX", 50)
-            orphan_checks = _get_int_env("PROVISIONING_ORPHAN_CONFIRM_CHECKS", 2)
-            orphan_check_interval = float(
-                _get_int_env("PROVISIONING_ORPHAN_CONFIRM_INTERVAL_SECONDS", 5)
+            orphan_empty_sub_peek_max = _get_int_env(
+                "PROVISIONING_ORPHAN_EMPTY_SUB_PEEK_MAX", 1
             )
             for group in groups:
                 try:
@@ -1070,29 +1155,22 @@ def _scale_subscription():
                     except ResourceNotFoundError:
                         continue
                     container_state = _get_container_instance_state(fresh_group)
-                    if delete_orphans and container_state == "Running":
-                        message_id = (
-                            fresh_group.tags.get("message_id")
-                            if fresh_group.tags
-                            else None
-                        )
-                        subscription_name = (
-                            fresh_group.tags.get("subscription_name")
-                            if fresh_group.tags
-                            else None
-                        )
-                        if message_id and _confirm_message_absent(
-                            config,
-                            message_id,
-                            orphan_peek_max,
-                            orphan_checks,
-                            orphan_check_interval,
-                            subscription_name,
+                    if container_state == "Running":
+                        tags = fresh_group.tags or {}
+                        tagged_message_id = tags.get("message_id")
+                        tagged_subscription = tags.get("subscription_name")
+                        if (
+                            tagged_message_id
+                            and tagged_subscription
+                            and _subscription_is_empty(
+                                config, tagged_subscription, orphan_empty_sub_peek_max
+                            )
                         ):
                             logging.info(
-                                "Deleting orphan container %s (message_id=%s not found)",
+                                "Deleting running orphan container %s (message_id=%s subscription=%s is empty)",
                                 group.name,
-                                message_id,
+                                tagged_message_id,
+                                tagged_subscription,
                             )
                             _delete_container_group(config, group.name)
                             continue
@@ -1133,7 +1211,7 @@ def _scale_subscription():
 
 @app.timer_trigger(schedule="0 */1 * * * *", arg_name="mytimer")
 def main(mytimer: func.TimerRequest, context: func.Context) -> None:
-    version = 17
+    version = 19
     INVOCATION_ID.set(getattr(context, "invocation_id", None))
     logging.info(
         "===== SCALER TRIGGERED - STARTING EXECUTION - VERSION %s =====", version

@@ -266,6 +266,36 @@ def test_existing_message_keys_collects_tags():
     assert keys == {("sub1", "a"), ("sub1", "b"), ("sub2", "a")}
 
 
+def test_subscription_is_empty_true_when_no_messages(monkeypatch):
+    """Category: Service Bus | Subscription empty check returns True for no peeked messages."""
+    config = _make_config()
+    receiver = FakeReceiver([])
+
+    class DummySBFactory:
+        @staticmethod
+        def from_connection_string(_):
+            return FakeServiceBusClient(receiver)
+
+    monkeypatch.setattr(app, "ServiceBusClient", DummySBFactory)
+    assert app._subscription_is_empty(config, "subA", max_peek=1) is True
+
+
+def test_subscription_is_empty_false_when_messages_exist(monkeypatch):
+    """Category: Service Bus | Subscription empty check returns False when messages exist."""
+    config = _make_config()
+    receiver = FakeReceiver(
+        [FakeMessage([b'{"file_size_mb": 1}'], "m1", application_properties={"file_size_mb": 1})]
+    )
+
+    class DummySBFactory:
+        @staticmethod
+        def from_connection_string(_):
+            return FakeServiceBusClient(receiver)
+
+    monkeypatch.setattr(app, "ServiceBusClient", DummySBFactory)
+    assert app._subscription_is_empty(config, "subA", max_peek=1) is False
+
+
 def test_provision_from_subscription_respects_max_and_skips_duplicates(monkeypatch):
     """Category: Provisioning | Provision only new messages and respect max count (subscription-scoped duplicate key)."""
     monkeypatch.setenv("PROVISIONING_CONFIRM_MESSAGE", "false")
@@ -435,3 +465,50 @@ def test_scale_subscription_provisions_deterministic_passes(monkeypatch):
     result = app._scale_subscription()
     assert result == "topic: OK"
     assert sorted(calls) == [("a", 1), ("b", 1)]
+
+
+def test_scale_subscription_deletes_running_orphan_when_tagged_subscription_empty(
+    monkeypatch,
+):
+    """Category: Scaling | Delete running container when tagged subscription is empty."""
+    config = _make_config(max_instances=3)
+    group = types.SimpleNamespace(name="g-running", tags={})
+    fresh_group = types.SimpleNamespace(
+        name="g-running",
+        tags={"message_id": "m1", "subscription_name": "subA"},
+    )
+    monkeypatch.setattr(app, "_get_config", lambda: config)
+    monkeypatch.setattr(app, "_list_relevant_container_groups", lambda _cfg: [group])
+    monkeypatch.setattr(app, "_split_container_groups", lambda groups: ([], []))
+    monkeypatch.setattr(
+        app, "_list_topic_subscriptions", lambda _cfg: [types.SimpleNamespace(name="subA")]
+    )
+    monkeypatch.setattr(
+        app,
+        "_provision_from_subscription",
+        lambda *args, **kwargs: (0, [], 0, {}),
+    )
+    monkeypatch.setattr(app, "_get_container_instance_state", lambda _cg: "Running")
+    monkeypatch.setattr(app, "_subscription_is_empty", lambda *_args, **_kwargs: True)
+
+    deleted = []
+    monkeypatch.setattr(
+        app, "_delete_container_group", lambda _cfg, name: deleted.append(name)
+    )
+    monkeypatch.setattr(app, "_should_delete_group", lambda _cg: False)
+
+    class DummyContainerGroups:
+        @staticmethod
+        def get(resource_group, name):
+            return fresh_group
+
+    class DummyAciClient:
+        container_groups = DummyContainerGroups()
+
+    monkeypatch.setattr(app, "_get_aci_client", lambda: DummyAciClient())
+    monkeypatch.setenv("PROVISIONING_MAX_WORKERS", "1")
+    monkeypatch.setenv("PROVISIONING_BATCH_SIZE", "1")
+
+    result = app._scale_subscription()
+    assert result == "topic: OK"
+    assert deleted == ["g-running"]

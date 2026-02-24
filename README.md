@@ -32,10 +32,13 @@ See `.env` for a full, working example. Key groups:
   - `PROVISIONING_MAX_WORKERS` (max parallel workers for provisioning, default 4)
   - `PROVISIONING_PEEK_MAX` (max messages to peek per subscription, default 50)
   - `PROVISIONING_CONFIRM_MESSAGE` (confirm message still present before provisioning via peek + message_id match; default true)
-  - `PROVISIONING_DELETE_ORPHANS` (delete running containers when tagged message is absent in that subscription, default true)
-  - `PROVISIONING_ORPHAN_PEEK_MAX` (peek size for orphan detection, default 50)
-  - `PROVISIONING_ORPHAN_CONFIRM_CHECKS` (absent checks before orphan delete, default 2)
-  - `PROVISIONING_ORPHAN_CONFIRM_INTERVAL_SECONDS` (seconds between checks, default 5)
+  - `PROVISIONING_IN_FLIGHT_MESSAGE_CHECK` (check message presence while ACI provisioning is in progress; default true)
+  - `PROVISIONING_IN_FLIGHT_PEEK_MAX` (peek size for in-flight presence check, default 100)
+  - `PROVISIONING_IN_FLIGHT_CHECK_INTERVAL_SECONDS` (seconds between in-flight checks, default 1)
+  - `PROVISIONING_POST_CREATE_PEEK_MAX` (peek size for post-provision presence check, default 100)
+  - `PROVISIONING_POST_CREATE_CONFIRM_CHECKS` (absent checks after provisioning before deleting new container, default 1)
+  - `PROVISIONING_POST_CREATE_CONFIRM_INTERVAL_SECONDS` (seconds between post-create checks, default 0)
+  - `PROVISIONING_ORPHAN_EMPTY_SUB_PEEK_MAX` (peek size for running-orphan cleanup when subscription appears empty, default 1)
 - Container env pass-through:
   - Set any `INSTANCE_*` variables and they will be passed to the container
     without the `INSTANCE_` prefix.
@@ -43,7 +46,7 @@ See `.env` for a full, working example. Key groups:
     subscription name (e.g. `VALIDATION_REQ_SUB`).
 
 ## Service Bus message format
-Only `message_id` (from Service Bus metadata) and `file_size_mb` are required.
+Only Service Bus metadata `message_id` and `file_size_mb` are required.
 `file_size_mb` must be supplied as a Service Bus application property
 (`application_properties.file_size_mb`).
 
@@ -66,8 +69,10 @@ Example:
 - Filters out subscriptions listed in `SKIP_SUBSCRIPTIONS`.
 - Creates an ACI group per message with tags:
   `managed_by`, `message_id`, `file_size_mb`, `subscription_name`.
+- While waiting on ACI provisioning, periodically re-checks whether the message is still present; if absent, deletes the container group and stops waiting.
+- After provisioning success, re-checks message presence and deletes the newly created container if the message is already gone.
 - Deletes containers only when both container instance state and provisioning state are terminal (e.g. container `Failed`/`Terminated` and provisioning `Succeeded`/`Failed`/`Terminated`).
-- Optionally deletes running containers when the tagged message is absent in that subscription (orphan cleanup).
+- Deletes running containers as orphan only when tagged `subscription_name` is empty (no messages peeked) while the container is still `Running`.
 - Captures the last 20 log lines from each container before deletion.
 
 ## Integration test
