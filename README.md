@@ -116,3 +116,6 @@ flowchart TD
   E --> F[Set ACI_IMAGE + app_settings_json]
   F --> G[Restart Function App]
 ```
+
+## Scalar Architecture Overview 
+<img src="./scalar-infra.jpg" alt="Scalar Architecture Overview" style="max-width:100%;">
