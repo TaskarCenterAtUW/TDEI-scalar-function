@@ -22,6 +22,8 @@ See `.env` for a full, working example. Key groups:
   `ACI_MAX_INSTANCES`, `ACI_DEFAULT_CPU`, `ACI_MEMORY_MULTIPLIER`,
   `ACI_MIN_MEMORY_GB`, `ACI_MAX_MEMORY_GB`
 - ACR (optional): `ACR_SERVER`, `ACR_USERNAME`, `ACR_PASSWORD`
+- Container diagnostics (optional): `LOG_ANALYTICS_WORKSPACE_ID`,
+  `LOG_ANALYTICS_WORKSPACE_KEY` (both must be set to enable ACI diagnostics)
 - Service Bus:
   - `SB_CONNECTION_STR` (required)
   - `SB_NAMESPACE` (optional if derivable from connection string)
@@ -69,6 +71,8 @@ Example:
 - Filters out subscriptions listed in `SKIP_SUBSCRIPTIONS`.
 - Creates an ACI group per message with tags:
   `managed_by`, `message_id`, `file_size_mb`, `subscription_name`.
+- When both `LOG_ANALYTICS_WORKSPACE_ID` and `LOG_ANALYTICS_WORKSPACE_KEY` are set,
+  ACI diagnostics are enabled with `ContainerInsights` log type.
 - While waiting on ACI provisioning, periodically re-checks whether the message is still present; if absent, deletes the container group and stops waiting.
 - After provisioning success, re-checks message presence and deletes the newly created container if the message is already gone.
 - Deletes containers only when both container instance state and provisioning state are terminal (e.g. container `Failed`/`Terminated` and provisioning `Succeeded`/`Failed`/`Terminated`).

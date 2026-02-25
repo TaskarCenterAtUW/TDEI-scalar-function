@@ -21,10 +21,12 @@ from azure.mgmt.containerinstance import ContainerInstanceManagementClient
 from azure.mgmt.servicebus import ServiceBusManagementClient
 from azure.mgmt.containerinstance.models import (
     ContainerGroup,
+    ContainerGroupDiagnostics,
     Container,
     ContainerPort,
     Port,
     IpAddress,
+    LogAnalytics,
     ResourceRequests,
     ResourceRequirements,
     OperatingSystemTypes,
@@ -319,6 +321,9 @@ def _log_config_summary(config: Config) -> None:
     )
     logging.info("Instance service (pass-through): INSTANCE_*")
     logging.info("ACR (optional): ACR_SERVER, ACR_USERNAME, ACR_PASSWORD")
+    logging.info(
+        "Container diagnostics (optional): LOG_ANALYTICS_WORKSPACE_ID, LOG_ANALYTICS_WORKSPACE_KEY"
+    )
     logging.info("Instance connections: INSTANCE_*")
 
 
@@ -707,6 +712,27 @@ def _build_container_env(
     return env_vars
 
 
+def _build_container_group_diagnostics() -> Optional[ContainerGroupDiagnostics]:
+    workspace_id = _get_env("LOG_ANALYTICS_WORKSPACE_ID")
+    workspace_key = _get_env("LOG_ANALYTICS_WORKSPACE_KEY")
+
+    if not workspace_id and not workspace_key:
+        return None
+    if not workspace_id or not workspace_key:
+        logging.warning(
+            "LOG_ANALYTICS_WORKSPACE_ID and LOG_ANALYTICS_WORKSPACE_KEY must both be set; skipping diagnostics"
+        )
+        return None
+
+    return ContainerGroupDiagnostics(
+        log_analytics=LogAnalytics(
+            workspace_id=workspace_id,
+            workspace_key=workspace_key,
+            log_type="ContainerInsights",
+        )
+    )
+
+
 # -----------------------------------------------------------------------------
 # ACI provisioning
 # -----------------------------------------------------------------------------
@@ -759,6 +785,10 @@ def _create_container_instance(
         ]
         logging.info("Using ACR credentials for server: %s", config.acr.server)
 
+    diagnostics = _build_container_group_diagnostics()
+    if diagnostics:
+        logging.info("Enabling Log Analytics diagnostics for container group %s", group_name)
+
     group = ContainerGroup(
         location=config.azure.aci_location,
         containers=[container],
@@ -769,6 +799,7 @@ def _create_container_instance(
             type="Public",
         ),
         image_registry_credentials=image_registry_credentials,
+        diagnostics=diagnostics,
         tags={
             "managed_by": config.azure.aci_name_prefix,
             "message_id": str(payload["message_id"]),

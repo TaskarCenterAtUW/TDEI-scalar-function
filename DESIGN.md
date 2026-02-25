@@ -23,6 +23,8 @@ ACI
 - `ACR_SERVER`
 - `ACR_USERNAME`
 - `ACR_PASSWORD`
+- `LOG_ANALYTICS_WORKSPACE_ID` (optional, must be paired with key)
+- `LOG_ANALYTICS_WORKSPACE_KEY` (optional, must be paired with id)
 
 Container
 - `INSTANCE_*`
@@ -90,6 +92,8 @@ Only two fields are required; other properties are ignored and may vary by servi
    - `message_id`
    - `file_size_mb`
    - `subscription_name`
+   - When both Log Analytics env vars are present, set container group diagnostics to
+     `ContainerInsights` using `LOG_ANALYTICS_WORKSPACE_ID` and `LOG_ANALYTICS_WORKSPACE_KEY`.
 8. While waiting for provision completion, optionally poll Service Bus for message presence; if missing, delete the just-created container and abort this provision result.
 9. After successful provisioning, verify message is still present; if missing, delete the new container.
 10. Delete a container when **both** container instance state and provisioning state are terminal (e.g. container `Failed`/`Terminated` and provisioning `Succeeded`/`Failed`/`Terminated`). Capture last 20 lines of container logs before deletion.

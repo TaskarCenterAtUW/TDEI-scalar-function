@@ -110,6 +110,22 @@ Print which files and message IDs would be sent without sending or receiving:
 python send-to-q.py --files-json files-list.json --dry-run
 ```
 
+### Resume / track existing report
+
+If the script stopped (crash, Ctrl+C, etc.) after sending messages but before all completions were received, you can resume by pointing it at the existing report. The script will **not** send any new messages; it only listens on the completion queue (and checks the DLQ) and updates the report as responses arrive.
+
+```bash
+python send-to-q.py --resume reports/q_msg_report_20260224_100916.csv
+```
+
+You can override completion topic/subscription and timeout:
+
+```bash
+python send-to-q.py --resume reports/my_run.csv --completion-topic my-response-topic --wait-timeout 3600
+```
+
+The report file is updated in place as completions are received.
+
 ## Options summary
 
 | Option | Short | Description |
@@ -125,6 +141,7 @@ python send-to-q.py --files-json files-list.json --dry-run
 | `--wait-timeout` | — | Max seconds to wait for completions (default: 300000). |
 | `--report` | — | Output CSV path (default: `reports/q_msg_report_<timestamp>.csv`). |
 | `--dry-run` | — | List files and payloads only; do not send or receive. |
+| `--resume` | — | Load jobs from an existing report CSV and only track completions (no new sends). |
 
 ## Report CSV columns
 

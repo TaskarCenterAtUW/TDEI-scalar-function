@@ -170,6 +170,29 @@ def test_parse_message_non_numeric_file_size():
         app._parse_message(msg)
 
 
+def test_build_container_group_diagnostics_when_env_present(monkeypatch):
+    """Category: Provisioning | Build diagnostics when both Log Analytics env vars are set."""
+    monkeypatch.setenv("LOG_ANALYTICS_WORKSPACE_ID", "workspace-id")
+    monkeypatch.setenv("LOG_ANALYTICS_WORKSPACE_KEY", "workspace-key")
+
+    diagnostics = app._build_container_group_diagnostics()
+
+    assert diagnostics is not None
+    assert diagnostics.log_analytics.workspace_id == "workspace-id"
+    assert diagnostics.log_analytics.workspace_key == "workspace-key"
+    assert diagnostics.log_analytics.log_type == "ContainerInsights"
+
+
+def test_build_container_group_diagnostics_requires_both_env(monkeypatch):
+    """Category: Provisioning | Skip diagnostics when one Log Analytics env var is missing."""
+    monkeypatch.setenv("LOG_ANALYTICS_WORKSPACE_ID", "workspace-id")
+    monkeypatch.delenv("LOG_ANALYTICS_WORKSPACE_KEY", raising=False)
+
+    diagnostics = app._build_container_group_diagnostics()
+
+    assert diagnostics is None
+
+
 def test_split_container_groups_terminal_vs_active():
     """Category: Container Groups | Split by container state and provisioning failure."""
     # Group with instance_view.state Succeeded (no containers[]) falls back to group state

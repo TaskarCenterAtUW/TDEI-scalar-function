@@ -378,6 +378,64 @@ def load_file_paths(
     return paths_with_size
 
 
+def load_records_from_csv(csv_path: str) -> dict[str, JobRecord]:
+    """
+    Load job records from an existing report CSV (e.g. from a previous run that stopped).
+    Rows with completed_at already set are left as-is so they count as done; others will be
+    updated when completions are received. Returns dict keyed by message_id.
+    """
+    path = Path(csv_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Report file not found: {csv_path}")
+    records: dict[str, JobRecord] = {}
+    with open(path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames or "message_id" not in reader.fieldnames:
+            raise ValueError("CSV must have a message_id column")
+        for row in reader:
+            message_id = (row.get("message_id") or "").strip()
+            if not message_id:
+                continue
+            file_upload_path = (row.get("file_upload_path") or "").strip()
+            try:
+                file_size_bytes = int(row.get("file_size_bytes") or 0)
+            except (TypeError, ValueError):
+                file_size_bytes = 0
+            sent_at_str = (row.get("sent_at") or "").strip()
+            try:
+                sent_at = datetime.strptime(sent_at_str, "%Y-%m-%d %H:%M:%S") if sent_at_str else datetime.now()
+            except ValueError:
+                sent_at = datetime.now()
+            completed_at = None
+            completed_at_str = (row.get("completed_at") or "").strip()
+            if completed_at_str:
+                try:
+                    completed_at = datetime.strptime(completed_at_str, "%Y-%m-%d %H:%M:%S")
+                except ValueError:
+                    pass
+            success_raw = (row.get("success") or "").strip()
+            success: bool | None = None
+            if success_raw:
+                if success_raw.lower() in ("true", "1", "yes"):
+                    success = True
+                elif success_raw.lower() in ("false", "0", "no"):
+                    success = False
+            message = (row.get("message") or "").strip()
+            error = (row.get("error") or "").strip()
+            rec = JobRecord(
+                file_upload_path=file_upload_path,
+                file_size_bytes=file_size_bytes,
+                message_id=message_id,
+                sent_at=sent_at,
+                completed_at=completed_at,
+                success=success,
+                message=message or None,
+                error=error or None,
+            )
+            records[message_id] = rec
+    return records
+
+
 def write_csv_report(records: list[JobRecord], output_path: str) -> str:
     """Write CSV with file_upload_path, file_size, message_id, sent_at, completed_at, success, message, etc.
     Flushes and syncs to disk so no updates are lost."""
@@ -474,7 +532,73 @@ def main() -> None:
         action="store_true",
         help="Only list files and payloads, do not send or receive.",
     )
+    parser.add_argument(
+        "--resume",
+        metavar="REPORT",
+        default=None,
+        help="Resume/track: load job list from an existing report CSV and only listen on the completion queue to update it (no new messages sent).",
+    )
     args = parser.parse_args()
+
+    # Resume mode: load records from report and only track completions
+    if args.resume:
+        if not SERVICE_BUS_CONNECTION_STR:
+            print("SERVICE_BUS_CONNECTION environment variable is not set.")
+            return
+        try:
+            records = load_records_from_csv(args.resume)
+        except (FileNotFoundError, ValueError) as e:
+            parser.error(str(e))
+        if not records:
+            parser.error(f"No job records found in {args.resume}")
+        report_path = args.resume
+        report_lock = threading.Lock()
+        pending = sum(1 for r in records.values() if r.completed_at is None and not r.error)
+        print(f"Resume: loaded {len(records)} job(s) from {report_path} ({pending} pending). Tracking completion queue...")
+        stop_event = threading.Event()
+        receiver_thread = threading.Thread(
+            target=run_receiver,
+            args=(
+                args.completion_topic,
+                args.completion_subscription,
+                records,
+                stop_event,
+                args.wait_timeout,
+                report_path,
+                report_lock,
+            ),
+            daemon=True,
+        )
+        receiver_thread.start()
+        start = time.time()
+        last_dlq_check = 0.0
+        while time.time() - start < args.wait_timeout:
+            if time.time() - last_dlq_check >= 5:
+                try:
+                    dlq_marked = mark_records_from_dlq(
+                        args.completion_topic,
+                        args.completion_subscription,
+                        records,
+                        report_path,
+                        report_lock,
+                    )
+                    if dlq_marked:
+                        print(f"Marked {dlq_marked} pending message(s) as failed from DLQ")
+                except Exception as dlq_err:
+                    print(f"DLQ check warning: {dlq_err}")
+                last_dlq_check = time.time()
+            done = sum(1 for r in records.values() if r.completed_at is not None or (r.error is not None and r.error != ""))
+            if done >= len(records):
+                break
+            time.sleep(2)
+        stop_event.set()
+        receiver_thread.join(timeout=10)
+        with report_lock:
+            write_csv_report(list(records.values()), report_path)
+        success_count = sum(1 for r in records.values() if r.success is True)
+        fail_count = sum(1 for r in records.values() if r.success is False or (r.error and r.error.strip()))
+        print(f"Done. Success: {success_count}, Failed/Error: {fail_count}. Report: {report_path}")
+        return
 
     files_json = args.files_json
     if not args.files and not args.files_from:
