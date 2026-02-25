@@ -441,7 +441,8 @@ def _split_container_groups(
             state,
             provisioning_state,
         )
-        if state in terminal_states:
+        # Treat provisioning failure as terminal even when instance state is non-terminal.
+        if state in terminal_states or provisioning_state == "Failed":
             terminal.append(group)
         else:
             active.append(group)
@@ -457,6 +458,8 @@ def _should_delete_group(cg: ContainerGroup) -> bool:
         container_state,
         provisioning_state,
     )
+    if provisioning_state == "Failed":
+        return True
     if not container_state or not provisioning_state:
         return False
     return container_state in {"Failed", "Terminated"} and provisioning_state in {
@@ -1211,7 +1214,7 @@ def _scale_subscription():
 
 @app.timer_trigger(schedule="0 */1 * * * *", arg_name="mytimer")
 def main(mytimer: func.TimerRequest, context: func.Context) -> None:
-    version = 19
+    version = 20
     INVOCATION_ID.set(getattr(context, "invocation_id", None))
     logging.info(
         "===== SCALER TRIGGERED - STARTING EXECUTION - VERSION %s =====", version

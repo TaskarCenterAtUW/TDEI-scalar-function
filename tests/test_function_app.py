@@ -171,7 +171,7 @@ def test_parse_message_non_numeric_file_size():
 
 
 def test_split_container_groups_terminal_vs_active():
-    """Category: Container Groups | Split by container instance state; terminal = Terminated or Failed only."""
+    """Category: Container Groups | Split by container state and provisioning failure."""
     # Group with instance_view.state Succeeded (no containers[]) falls back to group state
     succeeded = types.SimpleNamespace(
         instance_view=types.SimpleNamespace(state="Succeeded"),
@@ -202,16 +202,23 @@ def test_split_container_groups_terminal_vs_active():
             )
         ],
     )
+    provisioning_failed = types.SimpleNamespace(
+        instance_view=types.SimpleNamespace(state="Running"),
+        provisioning_state="Failed",
+    )
 
-    active, terminal = app._split_container_groups([succeeded, running, failed, terminated])
+    active, terminal = app._split_container_groups(
+        [succeeded, running, failed, terminated, provisioning_failed]
+    )
     assert running in active
     assert succeeded in active  # Succeeded is not in {Terminated, Failed}, so active
     assert failed in terminal
     assert terminated in terminal
+    assert provisioning_failed in terminal
 
 
 def test_should_delete_group_requires_both_states_terminal():
-    """Category: Container Groups | Delete only when container and provisioning state are terminal."""
+    """Category: Container Groups | Delete terminal groups and provisioning failures."""
     # Both terminal -> delete
     term = types.SimpleNamespace(
         name="g1",
@@ -253,6 +260,20 @@ def test_should_delete_group_requires_both_states_terminal():
         ],
     )
     assert app._should_delete_group(creating) is False
+
+    # Provisioning failure is terminal -> delete
+    provisioning_failed = types.SimpleNamespace(
+        name="g4",
+        provisioning_state="Failed",
+        containers=[
+            types.SimpleNamespace(
+                instance_view=types.SimpleNamespace(
+                    current_state=types.SimpleNamespace(state="Running")
+                )
+            )
+        ],
+    )
+    assert app._should_delete_group(provisioning_failed) is True
 
 
 def test_existing_message_keys_collects_tags():
