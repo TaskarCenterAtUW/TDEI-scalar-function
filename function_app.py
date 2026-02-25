@@ -743,7 +743,10 @@ def _create_container_instance(
 
     The container receives the message details via environment variables.
     """
-    group_name = f"{config.azure.aci_name_prefix}-{uuid.uuid4().hex[:8]}"
+    message_id_suffix = str(payload.get("message_id", "")).rsplit("-", 1)[-1].lower()
+    if not message_id_suffix:
+        message_id_suffix = uuid.uuid4().hex[:8]
+    group_name = f"{config.azure.aci_name_prefix}-{message_id_suffix}"
 
     # Calculate memory based on file size
     memory_gb = _calculate_memory_from_file_size_mb(config, payload["file_size_mb"])

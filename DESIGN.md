@@ -25,6 +25,9 @@ ACI
 - `ACR_PASSWORD`
 - `LOG_ANALYTICS_WORKSPACE_ID` (optional, must be paired with key)
 - `LOG_ANALYTICS_WORKSPACE_KEY` (optional, must be paired with id)
+  - Create the Log Analytics workspace in Azure Portal before enabling diagnostics.
+  - Get shared keys (use primary key as `LOG_ANALYTICS_WORKSPACE_KEY`):
+    `az monitor log-analytics workspace get-shared-keys --resource-group RESOURCE_GROUP_NAME --workspace-name WORKSPACE_NAME`
 
 Container
 - `INSTANCE_*`
@@ -36,6 +39,8 @@ Service Bus
 - `SB_CONNECTION_STR`
 - `SB_NAMESPACE` (optional if it can be derived from connection string)
 - `SB_TOPIC_NAME`
+
+Framework Configurations (Optional): 
 - `SKIP_SUBSCRIPTIONS` (optional comma-separated list of subscription names to skip)
 - `PROVISIONING_BATCH_SIZE` (optional max messages to provision per invocation, default 10; avoids timeout)
 - `PROVISIONING_MAX_WORKERS` (optional max parallel workers, default 4)
@@ -52,7 +57,7 @@ Service Bus
 ### Service Bus message (required fields for scaler)
 Only two fields are required; other properties are ignored and may vary by service.
 
-- `messageId` from Service Bus metadata (`message_id` in SDK object)
+- `messageId` from Service Bus application properties
 - `file_size_mb` from Service Bus application properties
 ```json
 {
@@ -70,10 +75,7 @@ Only two fields are required; other properties are ignored and may vary by servi
 - Scaler loops through topic subscriptions in sorted name order for deterministic behavior.
 - Provisioning uses a thread pool (bounded by `PROVISIONING_MAX_WORKERS`) to run subscriptions in parallel.
 - Subscriptions listed in `SKIP_SUBSCRIPTIONS` are filtered out before processing.
-- Each subscription peek can look ahead up to `PROVISIONING_PEEK_MAX` to skip
   duplicates and reach the next unprocessed message.
-- When `PROVISIONING_CONFIRM_MESSAGE=true`, the scaler confirms the message is still present before provisioning by peeking again and matching `message_id`.
-- During ACI provisioning wait, the scaler can re-check message presence (`PROVISIONING_IN_FLIGHT_MESSAGE_CHECK`); if absent, it deletes the in-progress container group and stops waiting.
 - After ACI provisioning reports success, the scaler re-checks message presence and deletes newly provisioned containers if message is absent.
 - Pass 1 provisions at most one message per subscription.
 - Pass 2 fills remaining capacity with more messages, still in order.

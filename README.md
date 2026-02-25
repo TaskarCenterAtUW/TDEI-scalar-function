@@ -21,9 +21,12 @@ See `.env` for a full, working example. Key groups:
 - ACI: `ACI_IMAGE`, `ACI_NAME_PREFIX`, `ACI_LOCATION`,
   `ACI_MAX_INSTANCES`, `ACI_DEFAULT_CPU`, `ACI_MEMORY_MULTIPLIER`,
   `ACI_MIN_MEMORY_GB`, `ACI_MAX_MEMORY_GB`
-- ACR (optional): `ACR_SERVER`, `ACR_USERNAME`, `ACR_PASSWORD`
-- Container diagnostics (optional): `LOG_ANALYTICS_WORKSPACE_ID`,
+- ACR: `ACR_SERVER`, `ACR_USERNAME`, `ACR_PASSWORD`
+- Container diagnostics: `LOG_ANALYTICS_WORKSPACE_ID`,
   `LOG_ANALYTICS_WORKSPACE_KEY` (both must be set to enable ACI diagnostics)
+  - Create the Log Analytics workspace in Azure Portal first.
+  - To retrieve shared keys (use primary key as `LOG_ANALYTICS_WORKSPACE_KEY`):
+    `az monitor log-analytics workspace get-shared-keys --resource-group RESOURCE_GROUP_NAME --workspace-name WORKSPACE_NAME`
 - Service Bus:
   - `SB_CONNECTION_STR` (required)
   - `SB_NAMESPACE` (optional if derivable from connection string)
@@ -44,8 +47,8 @@ See `.env` for a full, working example. Key groups:
 - Container env pass-through:
   - Set any `INSTANCE_*` variables and they will be passed to the container
     without the `INSTANCE_` prefix.
-  - Optional: `INSTANCE_SUBSCRIPTION_ENV_NAME` sets which env key receives the
-    subscription name (e.g. `VALIDATION_REQ_SUB`).
+  - `INSTANCE_SUBSCRIPTION_ENV_NAME` sets which env key receives the
+    subscription name for service to listen to (e.g. `VALIDATION_REQ_SUB`).
 
 ## Service Bus message format
 Only Service Bus metadata `message_id` and `file_size_mb` are required.
@@ -92,9 +95,13 @@ Run:
 - `pytest -m "not integration" -vv`
 
 - `pytest -m integration tests/test_integration_e2e.py --e2e-file-sizes 50,180,500,1024 --e2e-expected-subscriptions 1-50MB,51-200MB,201-600MB,601-1GB --e2e-timeout-seconds 900`
+  
+  The values are mapped by position: `50 -> 1-50MB`, `180 -> 51-200MB`,
+  `500 -> 201-600MB`, and `1024 -> 601-1GB`. Keep both comma-separated lists
+  in the same order and with the same number of entries.
 
 ## Function timeout
-The timer function timeout is set to **10 minutes** in `host.json` (`functionTimeout`: `00:10:00`), which is the maximum for the Consumption plan. Provisioning is capped at **`PROVISIONING_BATCH_SIZE`** (default 10) messages per invocation so each run stays within the timeout. If runs still time out, use a **Premium or Dedicated** plan or lower the batch size / `ACI_MAX_INSTANCES`.
+The timer function timeout is set to **10 minutes** in `host.json` (`functionTimeout`: `00:10:00`), which is the maximum for the Consumption plan. Provisioning is capped at **`PROVISIONING_BATCH_SIZE`** (default 10) messages per invocation so each run stays within the timeout. If runs still time out, we should use a **Premium or Dedicated** plan or lower the batch size / `ACI_MAX_INSTANCES`.
 
 ## Deploy scaler code (manual)
 `.github/workflows/deploy-scaler-code.yml` deploys this repo to the Function App
