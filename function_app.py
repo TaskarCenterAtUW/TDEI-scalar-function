@@ -1063,13 +1063,13 @@ def _scale_subscription():
                 )
                 return f"{config.service_bus.topic_name}: no subscriptions"
 
-            max_workers = _get_int_env("PROVISIONING_MAX_WORKERS", 4)
-            max_workers = max(1, min(max_workers, len(subscriptions)))
+            max_workers = max(1, _get_int_env("PROVISIONING_MAX_WORKERS", 4))
             logging.info(
-                "[%s] Provisioning in parallel with %s workers (batch=%s)",
+                "[%s] Provisioning in parallel with %s workers (batch=%s, subscriptions=%s)",
                 config.service_bus.topic_name,
                 max_workers,
                 remaining_slots,
+                len(subscriptions),
             )
 
             existing_ids_lock = threading.Lock()
@@ -1248,7 +1248,7 @@ def _scale_subscription():
 
 @app.timer_trigger(schedule="0 */1 * * * *", arg_name="mytimer")
 def main(mytimer: func.TimerRequest, context: func.Context) -> None:
-    version = 20
+    version = 22
     INVOCATION_ID.set(getattr(context, "invocation_id", None))
     logging.info(
         "===== SCALER TRIGGERED - STARTING EXECUTION - VERSION %s =====", version
