@@ -34,8 +34,8 @@ See `.env` for a full, working example. Key groups:
 - Optional processing control:
   - `SKIP_SUBSCRIPTIONS` (comma-separated subscription names to skip)
   - `PROVISIONING_BATCH_SIZE` (max messages to provision per function invocation, default 10; keeps runs within timeout)
-  - `PROVISIONING_MAX_WORKERS` (max parallel workers for provisioning, default 4)
-  - `PROVISIONING_PEEK_MAX` (max messages to peek per subscription, default 50)
+  - `PROVISIONING_MAX_WORKERS` (max parallel provisioning workers per invocation, default 4; independent of subscription count)
+  - `PROVISIONING_PEEK_MAX` (max messages to peek per subscription, default 100)
   - `PROVISIONING_CONFIRM_MESSAGE` (confirm message still present before provisioning via peek + message_id match; default true)
   - `PROVISIONING_IN_FLIGHT_MESSAGE_CHECK` (check message presence while ACI provisioning is in progress; default true)
   - `PROVISIONING_IN_FLIGHT_PEEK_MAX` (peek size for in-flight presence check, default 100)
@@ -70,7 +70,9 @@ Example:
 - Splits into active vs terminal groups (terminal = container instance state `Failed` or `Terminated`).
 - Skips provisioning if the same `(subscription_name, message_id)` already exists in active container tags (subscription-scoped duplicate detection; `message_id` is normalized to string).
 - Peeks messages (does not settle them).
-- Provisions in parallel across subscriptions (bounded by `PROVISIONING_MAX_WORKERS`).
+- Provisions in parallel with a thread pool bounded by `PROVISIONING_MAX_WORKERS`.
+- Pass 1 provisions at most one message per subscription.
+- Pass 2 fills remaining capacity and can run multiple workers even when all work is in a single subscription.
 - Filters out subscriptions listed in `SKIP_SUBSCRIPTIONS`.
 - Creates an ACI group per message with tags:
   `managed_by`, `message_id`, `file_size_mb`, `subscription_name`.
@@ -101,7 +103,7 @@ Run:
   in the same order and with the same number of entries.
 
 ## Function timeout
-The timer function timeout is set to **10 minutes** in `host.json` (`functionTimeout`: `00:10:00`), which is the maximum for the Consumption plan. Provisioning is capped at **`PROVISIONING_BATCH_SIZE`** (default 10) messages per invocation so each run stays within the timeout. If runs still time out, we should use a **Premium or Dedicated** plan or lower the batch size / `ACI_MAX_INSTANCES`.
+The timer function timeout is set to **20 minutes** in `host.json` (`functionTimeout`: `00:20:00`). Provisioning is capped at **`PROVISIONING_BATCH_SIZE`** (default 10) messages per invocation so each run stays within the timeout. If runs still time out, use a **Premium or Dedicated** plan or lower the batch size / `ACI_MAX_INSTANCES`.
 
 ## Deploy scaler code (manual)
 `.github/workflows/deploy-scaler-code.yml` deploys this repo to the Function App

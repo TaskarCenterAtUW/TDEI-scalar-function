@@ -43,8 +43,8 @@ Service Bus
 Framework Configurations (Optional): 
 - `SKIP_SUBSCRIPTIONS` (optional comma-separated list of subscription names to skip)
 - `PROVISIONING_BATCH_SIZE` (optional max messages to provision per invocation, default 10; avoids timeout)
-- `PROVISIONING_MAX_WORKERS` (optional max parallel workers, default 4)
-- `PROVISIONING_PEEK_MAX` (optional max peek batch size per subscription, default 50)
+- `PROVISIONING_MAX_WORKERS` (optional max parallel provisioning workers per invocation, default 4; independent of subscription count)
+- `PROVISIONING_PEEK_MAX` (optional max peek batch size per subscription, default 100)
 - `PROVISIONING_CONFIRM_MESSAGE` (optional confirm message still present before provisioning, default true)
 - `PROVISIONING_IN_FLIGHT_MESSAGE_CHECK` (optional check message presence while ACI provisioning is in progress, default true)
 - `PROVISIONING_IN_FLIGHT_PEEK_MAX` (optional peek size for in-flight presence checks, default 100)
@@ -73,12 +73,11 @@ Only two fields are required; other properties are ignored and may vary by servi
 - The function peeks messages from each subscription on the configured topic.
 - Peek does not settle messages; it is read-only and used only to decide provisioning.
 - Scaler loops through topic subscriptions in sorted name order for deterministic behavior.
-- Provisioning uses a thread pool (bounded by `PROVISIONING_MAX_WORKERS`) to run subscriptions in parallel.
+- Provisioning uses a thread pool (bounded by `PROVISIONING_MAX_WORKERS`) to run provisioning tasks in parallel.
 - Subscriptions listed in `SKIP_SUBSCRIPTIONS` are filtered out before processing.
-  duplicates and reach the next unprocessed message.
-- After ACI provisioning reports success, the scaler re-checks message presence and deletes newly provisioned containers if message is absent.
 - Pass 1 provisions at most one message per subscription.
-- Pass 2 fills remaining capacity with more messages, still in order.
+- Pass 2 fills remaining capacity and can schedule multiple workers for the same subscription when needed.
+- After ACI provisioning reports success, the scaler re-checks message presence and deletes newly provisioned containers if message is absent.
 - Scaler triggers every minute and the same process repeats.
 
 ## Provisioning flow
