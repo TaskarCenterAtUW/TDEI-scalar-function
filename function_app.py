@@ -384,7 +384,7 @@ def _calculate_memory_from_file_size_mb(config: Config, file_size_mb: float) -> 
 
 
 # -----------------------------------------------------------------------------
-# Container group helpers
+# Con₹tainer group helpers
 # -----------------------------------------------------------------------------
 def _list_relevant_container_groups(config: Config):
     """List container groups in the resource group that were created for this application.
@@ -1015,8 +1015,10 @@ def _scale_subscription():
         existing_ids = _existing_message_keys(active_groups)
 
         # 2) Peek messages by subscription and spin containers
+        at_capacity = False
         try:
             available_slots = config.azure.max_instances_per_sub - len(active_groups)
+            at_capacity = available_slots <= 0
             if available_slots <= 0:
                 logging.info(
                     "[%s] No capacity available (max=%s, active=%s)",
@@ -1024,106 +1026,59 @@ def _scale_subscription():
                     config.azure.max_instances_per_sub,
                     len(active_groups),
                 )
-                return f"{config.service_bus.topic_name}: at capacity"
-
-            # Cap provisions per invocation to avoid timeout (default 10)
-            batch_size = _get_int_env("PROVISIONING_BATCH_SIZE", 10)
-            batch_size = max(1, batch_size)
-            remaining_slots = min(available_slots, batch_size)
-            if remaining_slots < available_slots:
-                logging.info(
-                    "[%s] Capping this run to %s provisions (batch_size=%s, available_slots=%s)",
-                    config.service_bus.topic_name,
-                    remaining_slots,
-                    batch_size,
-                    available_slots,
-                )
-
-            subscriptions = sorted(
-                _list_topic_subscriptions(config),
-                key=lambda sub: sub.name,
-            )
-            skip_subscriptions = set(_parse_csv(_get_env("SKIP_SUBSCRIPTIONS")))
-            if skip_subscriptions:
-                subscriptions = [
-                    sub
-                    for sub in subscriptions
-                    if getattr(sub, "name", None) not in skip_subscriptions
-                ]
-                logging.info(
-                    "[%s] Skipping subscriptions: %s",
-                    config.service_bus.topic_name,
-                    ", ".join(sorted(skip_subscriptions)),
-                )
-            subscriptions = [sub for sub in subscriptions if getattr(sub, "name", None)]
-            if not subscriptions:
-                logging.info(
-                    "[%s] No subscriptions found to process",
-                    config.service_bus.topic_name,
-                )
-                return f"{config.service_bus.topic_name}: no subscriptions"
-
-            max_workers = max(1, _get_int_env("PROVISIONING_MAX_WORKERS", 4))
-            logging.info(
-                "[%s] Provisioning in parallel with %s workers (batch=%s, subscriptions=%s)",
-                config.service_bus.topic_name,
-                max_workers,
-                remaining_slots,
-                len(subscriptions),
-            )
-
-            existing_ids_lock = threading.Lock()
-
-            # Pass 1: one message per subscription (sorted by name), parallelized.
-            pass1_subscriptions = subscriptions[:remaining_slots]
-            pass1_limiter = _ProvisioningLimiter(len(pass1_subscriptions))
-            provisioned_pass1 = 0
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    _submit_with_context(
-                        executor,
-                        _provision_from_subscription,
-                        config,
-                        None,
-                        subscription.name,
-                        1,
-                        existing_ids,
-                        existing_ids_lock,
-                        pass1_limiter,
-                    ): subscription.name
-                    for subscription in pass1_subscriptions
-                }
-                for future in as_completed(futures):
-                    sub_name = futures[future]
-                    result = future.result()
-                    if isinstance(result, tuple):
-                        if len(result) == 4:
-                            count, ids, peeked, skipped = result
-                        elif len(result) == 3:
-                            count, ids, peeked = result
-                            skipped = None
-                        else:
-                            count, ids = result
-                            peeked = None
-                            skipped = None
-                    else:
-                        count, ids, peeked, skipped = result, [], None, None
+            else:
+                # Cap provisions per invocation to avoid timeout (default 10)
+                batch_size = _get_int_env("PROVISIONING_BATCH_SIZE", 10)
+                batch_size = max(1, batch_size)
+                remaining_slots = min(available_slots, batch_size)
+                if remaining_slots < available_slots:
                     logging.info(
-                        "Pass 1 provisioned %s message(s) from %s. message_ids=%s peeked=%s skipped=%s",
-                        count,
-                        sub_name,
-                        ids,
-                        peeked,
-                        skipped,
+                        "[%s] Capping this run to %s provisions (batch_size=%s, available_slots=%s)",
+                        config.service_bus.topic_name,
+                        remaining_slots,
+                        batch_size,
+                        available_slots,
                     )
-                    provisioned_pass1 += count
 
-            remaining_slots -= provisioned_pass1
+                subscriptions = sorted(
+                    _list_topic_subscriptions(config),
+                    key=lambda sub: sub.name,
+                )
+                skip_subscriptions = set(_parse_csv(_get_env("SKIP_SUBSCRIPTIONS")))
+                if skip_subscriptions:
+                    subscriptions = [
+                        sub
+                        for sub in subscriptions
+                        if getattr(sub, "name", None) not in skip_subscriptions
+                    ]
+                    logging.info(
+                        "[%s] Skipping subscriptions: %s",
+                        config.service_bus.topic_name,
+                        ", ".join(sorted(skip_subscriptions)),
+                    )
+                subscriptions = [sub for sub in subscriptions if getattr(sub, "name", None)]
+                if not subscriptions:
+                    logging.info(
+                        "[%s] No subscriptions found to process",
+                        config.service_bus.topic_name,
+                    )
+                    return f"{config.service_bus.topic_name}: no subscriptions"
 
-            # Pass 2: fill remaining slots in parallel.
-            if remaining_slots > 0:
-                pass2_limiter = _ProvisioningLimiter(remaining_slots)
-                provisioned_pass2 = 0
+                max_workers = max(1, _get_int_env("PROVISIONING_MAX_WORKERS", 4))
+                logging.info(
+                    "[%s] Provisioning in parallel with %s workers (batch=%s, subscriptions=%s)",
+                    config.service_bus.topic_name,
+                    max_workers,
+                    remaining_slots,
+                    len(subscriptions),
+                )
+
+                existing_ids_lock = threading.Lock()
+
+                # Pass 1: one message per subscription (sorted by name), parallelized.
+                pass1_subscriptions = subscriptions[:remaining_slots]
+                pass1_limiter = _ProvisioningLimiter(len(pass1_subscriptions))
+                provisioned_pass1 = 0
                 with ThreadPoolExecutor(max_workers=max_workers) as executor:
                     futures = {
                         _submit_with_context(
@@ -1132,12 +1087,12 @@ def _scale_subscription():
                             config,
                             None,
                             subscription.name,
-                            remaining_slots,
+                            1,
                             existing_ids,
                             existing_ids_lock,
-                            pass2_limiter,
+                            pass1_limiter,
                         ): subscription.name
-                        for subscription in subscriptions
+                        for subscription in pass1_subscriptions
                     }
                     for future in as_completed(futures):
                         sub_name = futures[future]
@@ -1155,14 +1110,60 @@ def _scale_subscription():
                         else:
                             count, ids, peeked, skipped = result, [], None, None
                         logging.info(
-                            "Pass 2 provisioned %s message(s) from %s. message_ids=%s peeked=%s skipped=%s",
+                            "Pass 1 provisioned %s message(s) from %s. message_ids=%s peeked=%s skipped=%s",
                             count,
                             sub_name,
                             ids,
                             peeked,
                             skipped,
                         )
-                        provisioned_pass2 += count
+                        provisioned_pass1 += count
+
+                remaining_slots -= provisioned_pass1
+
+                # Pass 2: fill remaining slots in parallel.
+                if remaining_slots > 0:
+                    pass2_limiter = _ProvisioningLimiter(remaining_slots)
+                    provisioned_pass2 = 0
+                    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        futures = {
+                            _submit_with_context(
+                                executor,
+                                _provision_from_subscription,
+                                config,
+                                None,
+                                subscription.name,
+                                remaining_slots,
+                                existing_ids,
+                                existing_ids_lock,
+                                pass2_limiter,
+                            ): subscription.name
+                            for subscription in subscriptions
+                        }
+                        for future in as_completed(futures):
+                            sub_name = futures[future]
+                            result = future.result()
+                            if isinstance(result, tuple):
+                                if len(result) == 4:
+                                    count, ids, peeked, skipped = result
+                                elif len(result) == 3:
+                                    count, ids, peeked = result
+                                    skipped = None
+                                else:
+                                    count, ids = result
+                                    peeked = None
+                                    skipped = None
+                            else:
+                                count, ids, peeked, skipped = result, [], None, None
+                            logging.info(
+                                "Pass 2 provisioned %s message(s) from %s. message_ids=%s peeked=%s skipped=%s",
+                                count,
+                                sub_name,
+                                ids,
+                                peeked,
+                                skipped,
+                            )
+                            provisioned_pass2 += count
 
         except ServiceBusError as exc:
             logging.exception(
@@ -1243,6 +1244,8 @@ def _scale_subscription():
         "[%s] _scale_subscription completed successfully",
         config.service_bus.topic_name,
     )
+    if at_capacity:
+        return f"{config.service_bus.topic_name}: at capacity"
     return f"{config.service_bus.topic_name}: OK"
 
 
