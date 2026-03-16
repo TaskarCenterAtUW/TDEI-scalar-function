@@ -1,4 +1,5 @@
 import types
+from dataclasses import replace
 
 import pytest
 
@@ -74,6 +75,28 @@ def _make_config(max_instances=3):
         acr=app.AcrConfig(server=None, username=None, password=None),
         instance_env={"CONTAINER_NAME": "osw"},
     )
+
+
+def test_resolve_subnet_resource_id_prefers_explicit_subnet_id():
+    """Category: Provisioning | Use explicit subnet ID when provided."""
+    config = _make_config()
+    config = replace(
+        config,
+        azure=replace(
+            config.azure,
+            aci_subnet_id="/subscriptions/sub/resourceGroups/net-rg/providers/Microsoft.Network/virtualNetworks/vnet-a/subnets/subnet-a",
+        ),
+    )
+
+    subnet_id = app._resolve_subnet_resource_id(config)
+    assert subnet_id == config.azure.aci_subnet_id
+
+
+def test_resolve_subnet_resource_id_returns_none_when_missing():
+    """Category: Provisioning | Return None when subnet ID is not configured."""
+    config = _make_config()
+    subnet_id = app._resolve_subnet_resource_id(config)
+    assert subnet_id is None
 
 
 def test_calculate_memory_clamps_min_max():

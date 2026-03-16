@@ -21,6 +21,8 @@ See `.env` for a full, working example. Key groups:
 - ACI: `ACI_IMAGE`, `ACI_NAME_PREFIX`, `ACI_LOCATION`,
   `ACI_MAX_INSTANCES`, `ACI_DEFAULT_CPU`, `ACI_MEMORY_MULTIPLIER`,
   `ACI_MIN_MEMORY_GB`, `ACI_MAX_MEMORY_GB`
+  - Optional VNet/subnet provisioning:
+    - `ACI_SUBNET_ID` (full Azure subnet resource ID)
 - ACR: `ACR_SERVER`, `ACR_USERNAME`, `ACR_PASSWORD`
 - Container diagnostics: `LOG_ANALYTICS_WORKSPACE_ID`,
   `LOG_ANALYTICS_WORKSPACE_KEY` (both must be set to enable ACI diagnostics)

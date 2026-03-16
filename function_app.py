@@ -71,6 +71,7 @@ class AzureProvisioningConfig:
     memory_multiplier: float
     min_memory_gb: float
     max_memory_gb: float
+    aci_subnet_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -293,6 +294,7 @@ def _get_config() -> Config:
                 memory_multiplier=float(_get_env("ACI_MEMORY_MULTIPLIER") or "8.0"),
                 min_memory_gb=float(_get_env("ACI_MIN_MEMORY_GB") or "0.5"),
                 max_memory_gb=float(_get_env("ACI_MAX_MEMORY_GB") or "240.0"),
+                aci_subnet_id=_get_env("ACI_SUBNET_ID"),
             ),
             service_bus=_build_service_bus_config(),
             acr=AcrConfig(
@@ -314,6 +316,9 @@ def _log_config_summary(config: Config) -> None:
     logging.info(
         "Azure provisioning (optional defaults): ACI_MAX_INSTANCES, ACI_DEFAULT_CPU, "
         "ACI_MEMORY_MULTIPLIER, ACI_MIN_MEMORY_GB, ACI_MAX_MEMORY_GB"
+    )
+    logging.info(
+        "ACI networking (optional): ACI_SUBNET_ID"
     )
     logging.info(
         "Service Bus (required): SB_CONNECTION_STR, "
@@ -733,6 +738,11 @@ def _build_container_group_diagnostics() -> Optional[ContainerGroupDiagnostics]:
     )
 
 
+def _resolve_subnet_resource_id(config: Config) -> Optional[str]:
+    subnet_id = (config.azure.aci_subnet_id or "").strip()
+    return subnet_id or None
+
+
 # -----------------------------------------------------------------------------
 # ACI provisioning
 # -----------------------------------------------------------------------------
@@ -792,15 +802,17 @@ def _create_container_instance(
     if diagnostics:
         logging.info("Enabling Log Analytics diagnostics for container group %s", group_name)
 
-    group = ContainerGroup(
+    subnet_resource_id = _resolve_subnet_resource_id(config)
+    ip_address = IpAddress(
+        ports=[Port(protocol="TCP", port=80)],
+        type="Private" if subnet_resource_id else "Public",
+    )
+    group_kwargs = dict(
         location=config.azure.aci_location,
         containers=[container],
         os_type=OperatingSystemTypes.linux,
         restart_policy=ContainerGroupRestartPolicy.NEVER,
-        ip_address=IpAddress(
-            ports=[Port(protocol="TCP", port=80)],  # External exposed port
-            type="Public",
-        ),
+        ip_address=ip_address,
         image_registry_credentials=image_registry_credentials,
         diagnostics=diagnostics,
         tags={
@@ -810,6 +822,13 @@ def _create_container_instance(
             "subscription_name": source_subscription,
         },
     )
+    if subnet_resource_id:
+        group_kwargs["subnet_ids"] = [{"id": subnet_resource_id}]
+        logging.info(
+            "Using VNet subnet %s for container group %s", subnet_resource_id, group_name
+        )
+
+    group = ContainerGroup(**group_kwargs)
 
     logging.info(
         f"Creating container group {group_name} (cpu={cpu}, mem={memory_gb}GB)"
@@ -1185,10 +1204,14 @@ def _scale_subscription():
                 "PROVISIONING_ORPHAN_EMPTY_SUB_PEEK_MAX", 1
             )
             for group in groups:
+                group_name = getattr(group, "name", None)
+                if not group_name:
+                    logging.warning("Skipping container group with missing name: %s", group)
+                    continue
                 try:
                     try:
                         fresh_group = _get_aci_client().container_groups.get(
-                            config.azure.resource_group, group.name
+                            config.azure.resource_group, group_name
                         )
                     except ResourceNotFoundError:
                         continue
@@ -1206,11 +1229,11 @@ def _scale_subscription():
                         ):
                             logging.info(
                                 "Deleting running orphan container %s (message_id=%s subscription=%s is empty)",
-                                group.name,
+                                group_name,
                                 tagged_message_id,
                                 tagged_subscription,
                             )
-                            _delete_container_group(config, group.name)
+                            _delete_container_group(config, group_name)
                             continue
                     if not _should_delete_group(fresh_group):
                         provisioning_state = getattr(
@@ -1219,16 +1242,16 @@ def _scale_subscription():
                         logging.info(
                             "Skipping delete; container %s not terminal "
                             "(container_state=%s provisioning_state=%s)",
-                            group.name,
+                            group_name,
                             container_state,
                             provisioning_state,
                         )
                         continue
-                    _delete_container_group(config, group.name)
+                    _delete_container_group(config, group_name)
                 except Exception as exc:
                     logging.exception(
                         "Failed to delete terminal container %s: %s",
-                        group.name,
+                        group_name,
                         exc,
                     )
 
