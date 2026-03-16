@@ -376,11 +376,15 @@ def _list_topic_subscriptions(config: Config):
 def _calculate_memory_from_file_size_mb(config: Config, file_size_mb: float) -> float:
     """Calculate memory requirements based on file size in MB.
 
-    Converts MB to GB first, then multiplies by the multiplier.
-    E.g., with MEMORY_MULTIPLIER=8.0: 500MB = 0.488GB -> 3.9GB memory
+    Converts MB to GB first, multiplies by the multiplier, and adds the
+    configured minimum as a fixed base.
+    E.g., with MEMORY_MULTIPLIER=8.0 and MIN_MEMORY_GB=0.5:
+    500MB = 0.488GB -> (0.488 * 8) + 0.5 = 4.4GB memory
     """
     file_size_gb = file_size_mb / 1024
-    memory_gb = config.azure.memory_multiplier * file_size_gb
+    memory_gb = config.azure.min_memory_gb + (
+        config.azure.memory_multiplier * file_size_gb
+    )
     memory_gb = max(
         config.azure.min_memory_gb, min(memory_gb, config.azure.max_memory_gb)
     )

@@ -102,8 +102,8 @@ def test_resolve_subnet_resource_id_returns_none_when_missing():
 def test_calculate_memory_clamps_min_max():
     """Category: Memory | Clamp memory to min/max thresholds."""
     config = _make_config()
-    assert app._calculate_memory_from_file_size_mb(config, 1) == 0.5
-    assert app._calculate_memory_from_file_size_mb(config, 1024) == 8.0
+    assert app._calculate_memory_from_file_size_mb(config, 1) == 0.6
+    assert app._calculate_memory_from_file_size_mb(config, 1024) == 8.5
     assert app._calculate_memory_from_file_size_mb(config, 50000) == 10.0
 
 
