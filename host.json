@@ -3,15 +3,17 @@
   "functionTimeout": "00:20:00",
   "logging": {
     "logLevel": {
-      "default": "Information",
+      "default": "Warning",
       "Function": "Information",
-      "Host.Results": "Information",
-      "Worker": "Information"
+      "Host.Results": "Error",
+      "Worker": "Warning",
+      "uamqp": "Warning",
+      "azure": "Warning"
     },
     "applicationInsights": {
       "samplingSettings": {
-        "isEnabled": false,
-        "excludedTypes": "Request"
+        "isEnabled": true,
+        "maxTelemetryItemsPerSecond": 5
       }
     }
   },
