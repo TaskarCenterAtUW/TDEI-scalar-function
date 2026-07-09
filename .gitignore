@@ -140,5 +140,6 @@ __azurite_db*__.json
 .coverage
 test-results/*
 
-.vscode/
+
 env.json
+.vscode/

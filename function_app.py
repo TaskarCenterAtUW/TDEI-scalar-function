@@ -52,11 +52,27 @@ class InvocationIdFilter(logging.Filter):
         return True
 
 
+# 1. Allow your Function App to emit Information logs
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.INFO)
+root_logger.setLevel(logging.INFO) 
 root_logger.addFilter(InvocationIdFilter())
-logging.getLogger("azure").setLevel(logging.INFO)
-logging.getLogger("azure.core").setLevel(logging.INFO)
+
+# 2. Silence ONLY the Azure SDK and AMQP connection noise
+azure_loggers = [
+    "azure",
+    "azure.core",
+    "azure.core.management",
+    "azure.eventhub",
+    "azure.eventhub._pyamqp",
+    "azure.eventhub._pyamqp.management_link",
+    "azure.servicebus",
+    "azure.servicebus._pyamqp",
+    "azure.servicebus._pyamqp.management_link",
+    "uamqp"
+]
+
+for logger_name in azure_loggers:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
 
 
 @dataclass(frozen=True)
@@ -317,9 +333,7 @@ def _log_config_summary(config: Config) -> None:
         "Azure provisioning (optional defaults): ACI_MAX_INSTANCES, ACI_DEFAULT_CPU, "
         "ACI_MEMORY_MULTIPLIER, ACI_MIN_MEMORY_GB, ACI_MAX_MEMORY_GB"
     )
-    logging.info(
-        "ACI networking (optional): ACI_SUBNET_ID"
-    )
+    logging.info("ACI networking (optional): ACI_SUBNET_ID")
     logging.info(
         "Service Bus (required): SB_CONNECTION_STR, "
         "SB_NAMESPACE (optional if derivable)"
@@ -804,7 +818,9 @@ def _create_container_instance(
 
     diagnostics = _build_container_group_diagnostics()
     if diagnostics:
-        logging.info("Enabling Log Analytics diagnostics for container group %s", group_name)
+        logging.info(
+            "Enabling Log Analytics diagnostics for container group %s", group_name
+        )
 
     subnet_resource_id = _resolve_subnet_resource_id(config)
     ip_address = IpAddress(
@@ -829,7 +845,9 @@ def _create_container_instance(
     if subnet_resource_id:
         group_kwargs["subnet_ids"] = [{"id": subnet_resource_id}]
         logging.info(
-            "Using VNet subnet %s for container group %s", subnet_resource_id, group_name
+            "Using VNet subnet %s for container group %s",
+            subnet_resource_id,
+            group_name,
         )
 
     group = ContainerGroup(**group_kwargs)
@@ -881,9 +899,7 @@ def _create_container_instance(
     try:
         result = poller.result()
     except Exception as exc:
-        logging.error(
-            "Provisioning failed with status %s: %s", poller.status(), exc
-        )
+        logging.error("Provisioning failed with status %s: %s", poller.status(), exc)
         return group_name, False
 
     group_provisioning = getattr(result, "provisioning_state", None)
@@ -1079,7 +1095,9 @@ def _scale_subscription():
                         config.service_bus.topic_name,
                         ", ".join(sorted(skip_subscriptions)),
                     )
-                subscriptions = [sub for sub in subscriptions if getattr(sub, "name", None)]
+                subscriptions = [
+                    sub for sub in subscriptions if getattr(sub, "name", None)
+                ]
                 if not subscriptions:
                     logging.info(
                         "[%s] No subscriptions found to process",
@@ -1210,7 +1228,9 @@ def _scale_subscription():
             for group in groups:
                 group_name = getattr(group, "name", None)
                 if not group_name:
-                    logging.warning("Skipping container group with missing name: %s", group)
+                    logging.warning(
+                        "Skipping container group with missing name: %s", group
+                    )
                     continue
                 try:
                     try:

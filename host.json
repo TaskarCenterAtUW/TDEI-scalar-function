@@ -8,7 +8,11 @@
       "Host.Results": "Error",
       "Worker": "Warning",
       "uamqp": "Warning",
-      "azure": "Warning"
+      "azure": "Warning",
+      "azure.core": "Warning",
+      "azure.servicebus": "Warning",
+      "Microsoft.Azure.WebJobs.Extensions.ServiceBus": "Warning",
+      "Microsoft.Azure.WebJobs.Host.Listeners": "Warning"
     },
     "applicationInsights": {
       "samplingSettings": {
