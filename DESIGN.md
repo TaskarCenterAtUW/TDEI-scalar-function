@@ -185,3 +185,16 @@ Only two fields are required; other properties are ignored and may vary by servi
 - Click **+ Select members**, choose your **Azure Function App**.
 - Click **Review + assign**.
 
+
+### 5. Virtual Network
+
+**Steps**
+- Azure Portal → Virtual Networks
+- Open TDEI-{env}-VNET
+- Click Access control (IAM)
+- Click + Add → Add role assignment
+- Select:
+- Role: Network Contributor
+- Assign access to: Managed identity
+- Members: Function App Name
+- Click Review + assign
