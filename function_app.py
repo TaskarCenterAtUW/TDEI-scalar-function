@@ -52,9 +52,10 @@ class InvocationIdFilter(logging.Filter):
         return True
 
 
-# 1. Allow your Function App to emit Information logs
+# 1. Root log level (default INFO); override with AZURE_LOG_LEVEL
 root_logger = logging.getLogger()
-root_logger.setLevel(logging.INFO) 
+_log_level_name = os.environ.get("AZURE_LOG_LEVEL", "INFO").upper()
+root_logger.setLevel(getattr(logging, _log_level_name, logging.INFO))
 root_logger.addFilter(InvocationIdFilter())
 
 # 2. Silence ONLY the Azure SDK and AMQP connection noise
