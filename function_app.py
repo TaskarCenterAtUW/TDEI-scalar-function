@@ -33,6 +33,9 @@ from azure.mgmt.containerinstance.models import (
     EnvironmentVariable,
     ImageRegistryCredential,
     ContainerGroupRestartPolicy,
+    Volume,
+    AzureFileVolume,
+    VolumeMount,
 )
 
 load_dotenv()
@@ -335,6 +338,11 @@ def _log_config_summary(config: Config) -> None:
         "ACI_MEMORY_MULTIPLIER, ACI_MIN_MEMORY_GB, ACI_MAX_MEMORY_GB"
     )
     logging.info("ACI networking (optional): ACI_SUBNET_ID")
+    logging.info(
+        "Azure File Share mount (optional, all required together): "
+        "MOUNT_SHARE_NAME, MOUNT_STORAGE_ACCOUNT_NAME, MOUNT_STORAGE_ACCOUNT_KEY, "
+        "MOUNT_PATH; MOUNT_READ_ONLY (optional)"
+    )
     logging.info(
         "Service Bus (required): SB_CONNECTION_STR, "
         "SB_NAMESPACE (optional if derivable)"
@@ -757,6 +765,53 @@ def _build_container_group_diagnostics() -> Optional[ContainerGroupDiagnostics]:
     )
 
 
+def _build_azure_file_volume() -> Optional[Tuple[Volume, VolumeMount]]:
+    """Build an Azure File Share volume + mount from env, or None if unset.
+
+    Env names are MOUNT_* prefixed and map to AzureFileVolume / VolumeMount params:
+    - MOUNT_SHARE_NAME
+    - MOUNT_STORAGE_ACCOUNT_NAME
+    - MOUNT_STORAGE_ACCOUNT_KEY
+    - MOUNT_PATH (container mount path, e.g. /mnt/files)
+    Optional:
+    - MOUNT_READ_ONLY (default false)
+    """
+    share_name = _get_env("MOUNT_SHARE_NAME")
+    storage_account_name = _get_env("MOUNT_STORAGE_ACCOUNT_NAME")
+    storage_account_key = _get_env("MOUNT_STORAGE_ACCOUNT_KEY")
+    mount_path = _get_env("MOUNT_PATH")
+
+    provided = [share_name, storage_account_name, storage_account_key, mount_path]
+    if not any(provided):
+        return None
+    if not all(provided):
+        logging.warning(
+            "Azure File Share mount requires MOUNT_SHARE_NAME, "
+            "MOUNT_STORAGE_ACCOUNT_NAME, MOUNT_STORAGE_ACCOUNT_KEY, "
+            "and MOUNT_PATH; skipping volume mount"
+        )
+        return None
+
+    read_only = _get_bool_env("MOUNT_READ_ONLY", False)
+    volume_name = "azurefile"
+
+    volume = Volume(
+        name=volume_name,
+        azure_file=AzureFileVolume(
+            share_name=share_name,
+            storage_account_name=storage_account_name,
+            storage_account_key=storage_account_key,
+            read_only=read_only,
+        ),
+    )
+    mount = VolumeMount(
+        name=volume_name,
+        mount_path=mount_path,
+        read_only=read_only,
+    )
+    return volume, mount
+
+
 def _resolve_subnet_resource_id(config: Config) -> Optional[str]:
     subnet_id = (config.azure.aci_subnet_id or "").strip()
     return subnet_id or None
@@ -795,11 +850,22 @@ def _create_container_instance(
     # Pass validation runner configuration to the container
     env_vars = _build_container_env(config, source_subscription)
 
+    azure_file = _build_azure_file_volume()
+    volume_mounts = [azure_file[1]] if azure_file else None
+    volumes = [azure_file[0]] if azure_file else None
+    if azure_file:
+        logging.info(
+            "Mounting Azure File Share %s at %s",
+            _get_env("MOUNT_SHARE_NAME"),
+            _get_env("MOUNT_PATH"),
+        )
+
     container = Container(
         name=group_name,
         image=config.azure.aci_image,
         resources=resources,
         environment_variables=env_vars,
+        volume_mounts=volume_mounts,
         ports=[
             ContainerPort(port=80, protocol="TCP")
         ],  # Expose port 80 for potential health checks or communication
@@ -836,6 +902,7 @@ def _create_container_instance(
         ip_address=ip_address,
         image_registry_credentials=image_registry_credentials,
         diagnostics=diagnostics,
+        volumes=volumes,
         tags={
             "managed_by": config.azure.aci_name_prefix,
             "message_id": str(payload["message_id"]),

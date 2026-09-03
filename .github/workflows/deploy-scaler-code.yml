@@ -32,7 +32,9 @@ jobs:
       - name: Deploy code to Function App
         shell: bash
         run: |
+          # Flex Consumption + Python needs remote build (see MS Flex how-to docs).
           az functionapp deployment source config-zip \
             --name "${{ inputs.function_app_name }}" \
             --resource-group "${{ inputs.resource_group }}" \
-            --src /tmp/functionapp.zip
+            --src /tmp/functionapp.zip \
+            --build-remote true

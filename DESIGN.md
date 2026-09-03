@@ -28,6 +28,12 @@ ACI
   - Create the Log Analytics workspace in Azure Portal before enabling diagnostics.
   - Get shared keys (use primary key as `LOG_ANALYTICS_WORKSPACE_KEY`):
     `az monitor log-analytics workspace get-shared-keys --resource-group RESOURCE_GROUP_NAME --workspace-name WORKSPACE_NAME`
+- Azure File Share mount (optional; all four required together when enabling; `MOUNT_*` prefix):
+  - `MOUNT_SHARE_NAME`
+  - `MOUNT_STORAGE_ACCOUNT_NAME`
+  - `MOUNT_STORAGE_ACCOUNT_KEY`
+  - `MOUNT_PATH` — path inside the container (e.g. `/mnt/files`)
+  - `MOUNT_READ_ONLY` (optional, default false)
 
 Container
 - `INSTANCE_*`
@@ -95,6 +101,9 @@ Only two fields are required; other properties are ignored and may vary by servi
    - `subscription_name`
    - When both Log Analytics env vars are present, set container group diagnostics to
      `ContainerInsights` using `LOG_ANALYTICS_WORKSPACE_ID` and `LOG_ANALYTICS_WORKSPACE_KEY`.
+   - When Azure File Share env vars are present, mount the share on the container at
+     `MOUNT_PATH` using `MOUNT_SHARE_NAME`, `MOUNT_STORAGE_ACCOUNT_NAME`, and
+     `MOUNT_STORAGE_ACCOUNT_KEY`.
 8. While waiting for provision completion, optionally poll Service Bus for message presence; if missing, delete the just-created container and abort this provision result.
 9. After successful provisioning, verify message is still present; if missing, delete the new container.
 10. Delete a container when **both** container instance state and provisioning state are terminal (e.g. container `Failed`/`Terminated` and provisioning `Succeeded`/`Failed`/`Terminated`). Capture last 20 lines of container logs before deletion.

@@ -29,6 +29,12 @@ See `.env` for a full, working example. Key groups:
   - Create the Log Analytics workspace in Azure Portal first.
   - To retrieve shared keys (use primary key as `LOG_ANALYTICS_WORKSPACE_KEY`):
     `az monitor log-analytics workspace get-shared-keys --resource-group RESOURCE_GROUP_NAME --workspace-name WORKSPACE_NAME`
+- Azure File Share mount (optional; all four required together; `MOUNT_*` prefix):
+  - `MOUNT_SHARE_NAME`
+  - `MOUNT_STORAGE_ACCOUNT_NAME`
+  - `MOUNT_STORAGE_ACCOUNT_KEY`
+  - `MOUNT_PATH` (path inside the container, e.g. `/mnt/files`)
+  - `MOUNT_READ_ONLY` (optional, default false)
 - Service Bus:
   - `SB_CONNECTION_STR` (required)
   - `SB_NAMESPACE` (optional if derivable from connection string)
@@ -80,6 +86,8 @@ Example:
   `managed_by`, `message_id`, `file_size_mb`, `subscription_name`.
 - When both `LOG_ANALYTICS_WORKSPACE_ID` and `LOG_ANALYTICS_WORKSPACE_KEY` are set,
   ACI diagnostics are enabled with `ContainerInsights` log type.
+- When Azure File Share env vars are set, the share is mounted at
+  `MOUNT_PATH` on each provisioned container.
 - While waiting on ACI provisioning, periodically re-checks whether the message is still present; if absent, deletes the container group and stops waiting.
 - After provisioning success, re-checks message presence and deletes the newly created container if the message is already gone.
 - Deletes containers only when both container instance state and provisioning state are terminal (e.g. container `Failed`/`Terminated` and provisioning `Succeeded`/`Failed`/`Terminated`).
@@ -107,7 +115,19 @@ Run:
 ## Function timeout
 The timer function timeout is set to **20 minutes** in `host.json` (`functionTimeout`: `00:20:00`). Provisioning is capped at **`PROVISIONING_BATCH_SIZE`** (default 10) messages per invocation so each run stays within the timeout. If runs still time out, use a **Premium or Dedicated** plan or lower the batch size / `ACI_MAX_INSTANCES`.
 
-## Deploy scaler code (manual)
+## Deploy scaler code (local)
+Deploy the current repo to an existing Function App (name from Azure Portal):
+
+```bash
+az login
+./scripts/deploy.sh <function-app-name>
+# or, if lookup fails / multiple subscriptions:
+./scripts/deploy.sh <function-app-name> -g <resource-group>
+```
+
+Code only — app settings / env vars are not changed.
+
+## Deploy scaler code (GitHub Actions)
 `.github/workflows/deploy-scaler-code.yml` deploys this repo to the Function App
 via manual `workflow_dispatch`.
 
@@ -134,3 +154,5 @@ flowchart TD
 
 ## Scalar Architecture Overview 
 <img src="./scalar-infra.jpg" alt="Scalar Architecture Overview" style="max-width:100%;">
+
+#./scripts/deploy.sh tdei-osw-incline-scalar-dev -g gaussianrg
