@@ -57,6 +57,9 @@ See `.env` for a full, working example. Key groups:
     without the `INSTANCE_` prefix.
   - `INSTANCE_SUBSCRIPTION_ENV_NAME` sets which env key receives the
     subscription name for service to listen to (e.g. `VALIDATION_REQ_SUB`).
+  - `DEFAULT_CPU` is always passed: the CPUs the container is created with
+    (`ACI_DEFAULT_CPU`), so a service can run one worker per CPU. An
+    `INSTANCE_DEFAULT_CPU` setting is ignored in favour of it.
 
 ## Service Bus message format
 Only Service Bus metadata `message_id` and `file_size_mb` are required.

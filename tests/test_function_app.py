@@ -107,6 +107,48 @@ def test_calculate_memory_clamps_min_max():
     assert app._calculate_memory_from_file_size_mb(config, 50000) == 10.0
 
 
+def _env_dict(env_vars):
+    names = [var.name for var in env_vars]
+    assert len(names) == len(set(names)), f"duplicate env names: {names}"
+    return {var.name: var.value for var in env_vars}
+
+
+def test_build_container_env_passes_the_container_cpu():
+    """Category: Provisioning | DEFAULT_CPU is the CPU count the container is created with."""
+    config = _make_config()
+    env = _env_dict(app._build_container_env(config, "sub-a"))
+    assert env == {"CONTAINER_NAME": "osw", "DEFAULT_CPU": "2"}
+
+    fractional = replace(config, azure=replace(config.azure, default_cpu=1.5))
+    assert _env_dict(app._build_container_env(fractional, "sub-a"))["DEFAULT_CPU"] == "1.5"
+
+
+def test_build_container_env_ignores_instance_default_cpu(caplog):
+    """Category: Provisioning | INSTANCE_DEFAULT_CPU can't disagree with the real allocation."""
+    config = _make_config()
+    config = replace(
+        config, instance_env={**config.instance_env, "DEFAULT_CPU": "8"}
+    )
+    env = _env_dict(app._build_container_env(config, "sub-a"))
+    assert env["DEFAULT_CPU"] == "2"
+    assert "Ignoring INSTANCE_DEFAULT_CPU=8" in caplog.text
+
+
+def test_build_container_env_still_names_the_subscription():
+    """Category: Provisioning | DEFAULT_CPU sits alongside the subscription env key."""
+    config = _make_config()
+    config = replace(
+        config,
+        instance_env={**config.instance_env, "SUBSCRIPTION_ENV_NAME": "QUALITY_REQ_SUB"},
+    )
+    env = _env_dict(app._build_container_env(config, "sub-a"))
+    assert env == {
+        "CONTAINER_NAME": "osw",
+        "DEFAULT_CPU": "2",
+        "QUALITY_REQ_SUB": "sub-a",
+    }
+
+
 def test_parse_message_application_properties():
     """Category: Message Parsing | Parse file size from application properties."""
     body = [b'{"file_size_mb": 12.5}']
