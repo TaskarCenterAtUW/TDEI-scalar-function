@@ -40,6 +40,7 @@ Container
 - `INSTANCE_SUBSCRIPTION_ENV_NAME` (optional) sets which container env key receives the subscription name; this is required for service to know which subscription to read messages from.
 - The scaler strips the `INSTANCE_` prefix and passes remaining keys to the container.
 - `SUBSCRIPTION_ENV_NAME` (from `INSTANCE_SUBSCRIPTION_ENV_NAME`) is not passed to the container; it only names which env key receives the subscription name (e.g. `VALIDATION_REQ_SUB`).
+- `DEFAULT_CPU` is always passed and holds the CPUs the container is created with (`ACI_DEFAULT_CPU`, formatted like `4` or `1.5`), so services can size their worker pools to match. `INSTANCE_DEFAULT_CPU` is ignored with a warning, since the container's actual allocation should win.
 
 Service Bus
 - `SB_CONNECTION_STR`

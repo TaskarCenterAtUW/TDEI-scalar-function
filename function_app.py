@@ -725,6 +725,15 @@ def _parse_message(msg) -> dict:
     }
 
 
+CONTAINER_CPU_ENV_NAME = "DEFAULT_CPU"
+"""Container env key holding the CPUs the container was created with (ACI_DEFAULT_CPU).
+
+Services size their worker pools from it. Passing the value the container is
+actually created with keeps the two in step; an INSTANCE_DEFAULT_CPU setting
+would be a second copy that could drift.
+"""
+
+
 def _build_container_env(
     config: Config, source_subscription: str
 ) -> List[EnvironmentVariable]:
@@ -733,7 +742,20 @@ def _build_container_env(
     for name, value in config.instance_env.items():
         if name == "SUBSCRIPTION_ENV_NAME":
             continue
+        if name == CONTAINER_CPU_ENV_NAME:
+            logging.warning(
+                "Ignoring INSTANCE_%s=%s: the container gets the CPU count it is created with (%s)",
+                name,
+                value,
+                config.azure.default_cpu,
+            )
+            continue
         env_vars.append(EnvironmentVariable(name=name, value=str(value)))
+    env_vars.append(
+        EnvironmentVariable(
+            name=CONTAINER_CPU_ENV_NAME, value=f"{config.azure.default_cpu:g}"
+        )
+    )
     if subscription_env_name and source_subscription:
         env_vars.append(
             EnvironmentVariable(
