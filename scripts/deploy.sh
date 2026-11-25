@@ -232,4 +232,19 @@ EOF
 fi
 
 echo "Deployment complete."
+
+# Record which commit the app now runs, as tags the TDEI quality dashboard can read. A deploy with
+# uncommitted or untracked changes to deployed files isn't any commit, so it's marked "-dirty".
+COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
+if [[ -n "$(git -C "$REPO_ROOT" status --porcelain -- . ':!.github' ':!tests' ':!simulation' ':!scripts' ':!.vscode' 2>/dev/null)" ]]; then
+  COMMIT="${COMMIT}-dirty"
+fi
+APP_ID="$(az functionapp show -g "$RESOURCE_GROUP" -n "$FUNCTION_APP_NAME" --query id -o tsv)"
+if az tag update --resource-id "$APP_ID" --operation Merge -o none \
+    --tags "deployed_commit=${COMMIT}" "deployed_from=scripts/deploy.sh"; then
+  echo "Tagged the Function App with deployed_commit=${COMMIT}"
+else
+  echo "warning: could not tag the Function App with the deployed commit" >&2
+fi
+
 echo "Note: Function App settings were not modified."
