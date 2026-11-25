@@ -38,3 +38,17 @@ jobs:
             --resource-group "${{ inputs.resource_group }}" \
             --src /tmp/functionapp.zip \
             --build-remote true
+
+      # Record which commit the app now runs, as tags: the TDEI quality dashboard's Reader identity
+      # can read tags but not app settings. Tags go through Azure's management API, so this works
+      # even while the app's public network access is disabled.
+      - name: Tag the Function App with the deployed commit
+        shell: bash
+        env:
+          FUNCTION_APP_NAME: ${{ inputs.function_app_name }}
+          RESOURCE_GROUP: ${{ inputs.resource_group }}
+        run: |
+          app_id=$(az functionapp show --name "$FUNCTION_APP_NAME" --resource-group "$RESOURCE_GROUP" --query id -o tsv)
+          az tag update --resource-id "$app_id" --operation Merge -o none --tags \
+            "deployed_commit=$GITHUB_SHA" \
+            "deployed_from=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
